@@ -1,0 +1,25 @@
+# Local-dev compose file. Production compose lives in ~/favotrip/docker-compose.yml on EC2.
+services:
+  mailbox-monitor:
+    build: .
+    image: favotrip-mailbox-monitor:dev
+    restart: unless-stopped
+    environment:
+      IMAP_USERNAME: klantenservice@favotrip.nl
+      IMAP_HOST: ${IMAP_HOST}
+      IMAP_PORT: ${IMAP_PORT:-993}
+      IMAP_SECRET_ID: favotrip/mailbox-monitor/imap
+      AWS_REGION: eu-west-1
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+      SLACK_CHANNEL: "#team"
+      CRON_SCHEDULE: "*/5 * * * *"
+      STATE_FILE: /var/lib/mailbox-monitor/state.json
+      HASH_STORE_FILE: /var/lib/mailbox-monitor/sender-hashes.json
+      HASH_SALT: ${HASH_SALT}
+      DRY_RUN: ${DRY_RUN:-false}
+      LOG_LEVEL: info
+    volumes:
+      - mailbox-state:/var/lib/mailbox-monitor
+
+volumes:
+  mailbox-state:
