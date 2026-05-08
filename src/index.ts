@@ -1,7 +1,7 @@
 import cron from 'node-cron';
 import { loadConfig } from './config.js';
 import { ConsoleLogPoster, SlackWebhookPoster, type SlackPoster } from './digest/slack.service.js';
-import { AwsSecretsClient } from './secrets/secrets.service.js';
+import { AwsSecretsClient, EnvSecretsClient, type SecretsClient } from './secrets/secrets.service.js';
 import { DigestRunner } from './runner.js';
 
 async function main(): Promise<void> {
@@ -10,7 +10,17 @@ async function main(): Promise<void> {
   const slack: SlackPoster = cfg.DRY_RUN
     ? new ConsoleLogPoster()
     : new SlackWebhookPoster(cfg.SLACK_WEBHOOK_URL, cfg.SLACK_CHANNEL);
-  const secrets = new AwsSecretsClient(cfg.AWS_REGION);
+
+  // Secrets-client selection. AwsSecretsClient is the documented production path,
+  // but the favotrip EC2 instance currently has no IAM role attached and follows
+  // the .env-file pattern shared by every other service in docker-compose
+  // (.env.backend, .env.frontend, .env.cms, .env.monitor — all hold their own
+  // credentials). Aligning with that pattern: when DEV_IMAP_HOST is set, read
+  // creds directly from env. AWS Secrets Manager remains the v2 path once an
+  // instance role is provisioned.
+  const secrets: SecretsClient = process.env.DEV_IMAP_HOST
+    ? new EnvSecretsClient()
+    : new AwsSecretsClient(cfg.AWS_REGION);
 
   const runner = new DigestRunner({ cfg, secrets, slack });
 

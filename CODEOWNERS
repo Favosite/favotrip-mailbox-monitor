@@ -1,0 +1,9 @@
+# Default reviewers for any change. The mailbox-monitor handles a customer-facing
+# inbox so any change to PII-mask / IMAP-fetch / Slack-digest paths needs careful
+# review before live deploy.
+* @Favosite/admins
+
+# Explicit ownership of the highest-risk files.
+/src/pii-mask/         @Favosite/admins
+/src/imap/             @Favosite/admins
+/src/secrets/          @Favosite/admins
