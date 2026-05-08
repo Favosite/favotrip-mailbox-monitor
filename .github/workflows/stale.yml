@@ -1,0 +1,25 @@
+name: Mark stale PRs/issues
+
+on:
+  schedule:
+    - cron: '30 2 * * *'
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/stale@v9
+        with:
+          days-before-stale: 7
+          days-before-close: 7
+          stale-pr-label: 'stale'
+          stale-issue-label: 'stale'
+          stale-pr-message: 'This PR has been inactive for 7 days. Still relevant? Reply or it will close in 7 more days.'
+          stale-issue-message: 'This issue has been inactive for 7 days. Still relevant? Reply or it will close in 7 more days.'
+          close-pr-message: 'Closing due to 14 days inactivity. Reopen if needed.'
+          close-issue-message: 'Closing due to 14 days inactivity. Reopen if needed.'
+          exempt-pr-labels: 'WAITING_ON,pinned'
+          exempt-issue-labels: 'WAITING_ON,pinned'
