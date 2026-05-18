@@ -1,15 +1,28 @@
 import cron from 'node-cron';
 import { loadConfig } from './config.js';
-import { ConsoleLogPoster, SlackWebhookPoster, type SlackPoster } from './digest/slack.service.js';
+import { BackendApiPoster, ConsoleLogPoster, SlackWebhookPoster, type SlackPoster } from './digest/slack.service.js';
 import { AwsSecretsClient, EnvSecretsClient, type SecretsClient } from './secrets/secrets.service.js';
 import { DigestRunner } from './runner.js';
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
 
-  const slack: SlackPoster = cfg.DRY_RUN
-    ? new ConsoleLogPoster()
-    : new SlackWebhookPoster(cfg.SLACK_WEBHOOK_URL, cfg.SLACK_CHANNEL);
+  // 2026-05-18: prefer BackendApiPoster when SLACK_BACKEND_URL+API_KEY+CHANNEL_ID
+  // are present (re-uses existing Favotrip /monitor/slack-notify endpoint, no
+  // separate Slack-app/webhook needed). Falls back to webhook only when those
+  // env vars are absent.
+  let slack: SlackPoster;
+  if (cfg.DRY_RUN) {
+    slack = new ConsoleLogPoster();
+  } else if (process.env.SLACK_BACKEND_URL && process.env.SLACK_API_KEY && process.env.SLACK_CHANNEL_ID) {
+    slack = new BackendApiPoster(
+      process.env.SLACK_BACKEND_URL,
+      process.env.SLACK_API_KEY,
+      process.env.SLACK_CHANNEL_ID,
+    );
+  } else {
+    slack = new SlackWebhookPoster(cfg.SLACK_WEBHOOK_URL, cfg.SLACK_CHANNEL);
+  }
 
   // Secrets-client selection. AwsSecretsClient is the documented production path,
   // but the favotrip EC2 instance currently has no IAM role attached and follows

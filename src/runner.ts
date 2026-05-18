@@ -39,7 +39,7 @@ export class DigestRunner {
     try {
       const creds = await this.deps.secrets.getImapCredentials(this.deps.cfg.IMAP_SECRET_ID);
       const fetcher = new ImapFetchService(creds);
-      raw = await fetcher.fetchSince({ since: lastFetchAt });
+      raw = await fetcher.fetchSince({ since: lastFetchAt, mailbox: this.deps.cfg.IMAP_MAILBOX });
     } catch (err) {
       this.log('error', 'imap.fetch.failed', { err: (err as Error).message });
       throw err;

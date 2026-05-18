@@ -9,6 +9,7 @@ const ConfigSchema = z.object({
     ),
   IMAP_HOST: z.string().min(1),
   IMAP_PORT: z.coerce.number().int().positive().default(993),
+  IMAP_MAILBOX: z.string().min(1).default("[Gmail]/All Mail"),
   IMAP_SECRET_ID: z.string().min(1),
   AWS_REGION: z.string().default('eu-west-1'),
   SLACK_WEBHOOK_URL: z.string().url(),

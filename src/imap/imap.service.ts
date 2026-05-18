@@ -14,6 +14,8 @@ export interface FetchOptions {
   since: Date;
   /** Hard cap to avoid runaway fetches. */
   maxMessages?: number;
+  /** IMAP mailbox to open; default INBOX. Gmail filters skip Inbox so prod uses "[Gmail]/All Mail". */
+  mailbox?: string;
 }
 
 const RESERVATION_RE = /\bFT-[A-Z0-9]{2,4}(?:-[A-Z0-9]{2,4}){1,3}\b/;
@@ -35,7 +37,7 @@ export class ImapFetchService {
       port: this.creds.port,
       secure: true,
       auth: { user: this.creds.user, pass: this.creds.password },
-      logger: false,
+      logger: { level: "info", info: console.error, debug: () => {}, warn: console.error, error: console.error } as any,
     };
 
     const rawClient = new ImapFlow(config);
@@ -46,7 +48,7 @@ export class ImapFetchService {
 
     await client.connect();
     try {
-      await client.mailboxOpen('INBOX', { readOnly: true });
+      await client.mailboxOpen(opts.mailbox ?? 'INBOX', { readOnly: true });
 
       const sinceFormatted = formatImapDate(opts.since);
       const searchResult = await client.search({ since: opts.since } as { since: Date });
