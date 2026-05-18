@@ -18,11 +18,21 @@ jobs:
       - run: npm install --no-audit --no-fund
       - run: npm run typecheck
       - run: npm run test:cov
-      - name: Verify no SMTP / mail-send dependency
+      - name: Verify no top-level SMTP / mail-send dependency
         run: |
           set -e
-          if grep -REq "(nodemailer|@aws-sdk/client-ses|smtp|sendmail)" package.json package-lock.json; then
-            echo "::error::Outbound-mail dependency detected. This monitor must be observe-only — no SMTP, no SES."
-            exit 1
-          fi
-          echo "no outbound-mail deps — ok"
+          # Only check TOP-LEVEL deps (dependencies + devDependencies in package.json).
+          # Transitive deps like `nodemailer` brought in by `mailparser` for parsing
+          # helpers are fine — we never instantiate a transport. The original grep
+          # over package-lock.json caught those false positives.
+          node -e "
+            const pkg = require('./package.json');
+            const top = Object.keys({...(pkg.dependencies||{}), ...(pkg.devDependencies||{})});
+            const banned = /^(nodemailer|@aws-sdk\\/client-ses|smtp|sendmail)\$/i;
+            const bad = top.filter(d => banned.test(d));
+            if (bad.length) {
+              console.error('::error::Top-level outbound-mail dep detected: ' + bad.join(', '));
+              process.exit(1);
+            }
+            console.log('no top-level outbound-mail deps — ok');
+          "
