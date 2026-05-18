@@ -22,6 +22,7 @@ function mkCfg(overrides: Partial<Config> = {}): Config {
     IMAP_USERNAME: 'klantenservice@favotrip.nl',
     IMAP_HOST: 'imap.example.com',
     IMAP_PORT: 993,
+    IMAP_MAILBOX: '[Gmail]/All Mail',
     IMAP_SECRET_ID: 'fake',
     AWS_REGION: 'eu-west-1',
     SLACK_WEBHOOK_URL: 'https://hooks.slack.com/x',

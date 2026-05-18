@@ -21,11 +21,13 @@ export class AwsSecretsClient implements SecretsClient {
     if (!parsed.host || !parsed.port || !parsed.user || !parsed.password) {
       throw new Error('SecretsManager: missing required field (host/port/user/password)');
     }
+    // 2026-05-18: trim whitespace from all string fields — AWS Console paste
+    // sometimes leaves leading tab/space chars (silent in UI, visible to consumers).
     return {
-      host: parsed.host,
-      port: Number(parsed.port),
-      user: parsed.user,
-      password: parsed.password,
+      host: parsed.host.trim(),
+      port: Number(String(parsed.port).trim()),
+      user: parsed.user.trim(),
+      password: parsed.password.trim(),
     };
   }
 }
