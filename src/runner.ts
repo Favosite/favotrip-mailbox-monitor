@@ -2,6 +2,7 @@ import { RepeatedMailerStore } from './classifier/repeated-mailer.service.js';
 import type { Config } from './config.js';
 import { buildDigestMessage } from './digest/digest.service.js';
 import type { SlackPoster } from './digest/slack.service.js';
+import { QueueTaskDispatcher } from './dispatcher/queue-task.service.js';
 import { ImapFetchService } from './imap/imap.service.js';
 import { processMails } from './pipeline.js';
 import type { SecretsClient } from './secrets/secrets.service.js';
@@ -18,6 +19,7 @@ export class DigestRunner {
   private readonly state: LastRunStore;
   private readonly hashStore: RepeatedMailerStore;
   private readonly log: NonNullable<RunnerDeps['log']>;
+  private readonly dispatcher: QueueTaskDispatcher | null;
 
   constructor(private readonly deps: RunnerDeps) {
     this.state = new LastRunStore(deps.cfg.STATE_FILE);
@@ -28,6 +30,23 @@ export class DigestRunner {
       windowDays: deps.cfg.REPEATED_MAILER_WINDOW_DAYS,
     });
     this.log = deps.log ?? defaultLog;
+
+    // Queue-task dispatch (Tier-2 #6). Enabled only when both
+    // QUEUE_TASK_URL and QUEUE_TASK_API_KEY env vars are set. Lets us
+    // ship the code, deploy it, and flip the flag without redeploying.
+    if (deps.cfg.QUEUE_TASK_URL && deps.cfg.QUEUE_TASK_API_KEY) {
+      this.dispatcher = new QueueTaskDispatcher(
+        {
+          url: deps.cfg.QUEUE_TASK_URL,
+          apiKey: deps.cfg.QUEUE_TASK_API_KEY,
+          timeoutMs: deps.cfg.QUEUE_TASK_TIMEOUT_MS,
+        },
+        this.log,
+      );
+      this.log('info', 'queue.task.enabled', { url: deps.cfg.QUEUE_TASK_URL });
+    } else {
+      this.dispatcher = null;
+    }
   }
 
   async runOnce(now: Date = new Date()): Promise<void> {
@@ -61,6 +80,16 @@ export class DigestRunner {
       }
     } else {
       await this.deps.slack.post(buildDigestMessage(processed, now));
+    }
+
+    // Tier-2 #6: dispatch HIGH-priority mails to the centralised
+    // queue-task endpoint after the digest post. The digest is the
+    // primary human-visibility surface; the queue-task call is the
+    // Worker-routing surface. Both run, neither blocks the other.
+    // Dispatcher swallows errors internally so a backend hiccup does
+    // not crash the mailbox cycle.
+    if (this.dispatcher && processed.length > 0) {
+      await this.dispatcher.dispatchHighPriority(processed);
     }
 
     this.hashStore.prune(now);

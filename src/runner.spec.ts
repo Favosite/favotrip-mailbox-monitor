@@ -36,6 +36,7 @@ function mkCfg(overrides: Partial<Config> = {}): Config {
     REPEATED_MAILER_WINDOW_DAYS: 7,
     DRY_RUN: true,
     LOG_LEVEL: 'info',
+    QUEUE_TASK_TIMEOUT_MS: 10000,
     ...overrides,
   };
 }
