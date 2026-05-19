@@ -73,6 +73,19 @@ export class ImapFetchService {
         const body = (parsed.text ?? '').trim();
         const dateRaw = parsed.date ?? msg.internalDate ?? new Date();
         const date = dateRaw instanceof Date ? dateRaw : new Date(dateRaw);
+
+        // 2026-05-19: IMAP search({since: Date}) is DATE-ONLY granularity
+        // (formats to `19-May-2026` server-side), so it returns every
+        // message internalDate >= 00:00 of opts.since's day, not strictly
+        // after the datetime. Result: each 5-min cron tick re-fetched all
+        // of today's mail and posted the same growing digest to #team —
+        // 28 byte-similar copies in 2h observed 2026-05-18 in #alerts.
+        // Strict client-side datetime filter to guarantee each mail is
+        // posted in exactly one digest. The boundary uses `<=` so a mail
+        // dated exactly at the previous cycle's lastFetchAt is excluded
+        // (it was already processed in that cycle).
+        if (date <= opts.since) continue;
+
         const reservationMatch = (subject + '\n' + body).match(RESERVATION_RE);
 
         out.push({
