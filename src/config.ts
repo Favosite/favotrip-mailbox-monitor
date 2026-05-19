@@ -26,6 +26,24 @@ const ConfigSchema = z.object({
     .optional()
     .transform((v) => v === 'true' || v === '1'),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+
+  // Queue-task dispatch (Tier-2 #6 of Worker hardening plan). When all
+  // three vars are set, HIGH-priority mails (priority='HIGH') are POSTed
+  // to the centralised backend dispatch primitive POST /monitor/queue-task
+  // (see Favosite/site-backend#749). Endpoint records dedupe + rate-limit
+  // decisions; the actual SSH-to-Worker dispatch keeps living in
+  // slack-watcher's remote-dispatch.sh until later migration.
+  //
+  // Digest posting is unaffected. Even when queue-task is enabled, the
+  // digest still goes to #team so a human sees every mail (HIGH or
+  // NORMAL). The endpoint is additive, not a replacement.
+  //
+  // Leave QUEUE_TASK_URL unset to disable; the runner skips the dispatch
+  // step entirely. This lets us ship the code, deploy it, then flip the
+  // env flag once the backend PR is in prod and verified.
+  QUEUE_TASK_URL: z.string().url().optional(),
+  QUEUE_TASK_API_KEY: z.string().min(1).optional(),
+  QUEUE_TASK_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
