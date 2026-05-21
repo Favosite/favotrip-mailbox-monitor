@@ -51,7 +51,21 @@ export class ImapFetchService {
       await client.mailboxOpen(opts.mailbox ?? 'INBOX', { readOnly: true });
 
       const sinceFormatted = formatImapDate(opts.since);
-      const searchResult = await client.search({ since: opts.since } as { since: Date });
+      // 2026-05-21: imapflow's `client.search({ since })` returns
+      // SEQUENCE NUMBERS by default. The code below calls
+      // `client.fetchOne(id, ..., { uid: true })` treating those ids as
+      // UIDs — which silently returns no rows for any mailbox where
+      // seqNo != UID (i.e. almost every real mailbox). Discovered while
+      // building the Phase-3 keyword classifier dry-run: production
+      // `cycle.end processed:0` was caused by this, not by an empty
+      // mailbox (33064 mails in [Gmail]/All Mail, 343 since 2026-05-15
+      // confirmed via direct IMAP status probe). Fix: pass `{ uid: true
+      // }` to search so it returns UIDs that match the subsequent
+      // fetchOne UID-mode call.
+      const searchResult = await client.search(
+        { since: opts.since } as { since: Date },
+        { uid: true },
+      );
       const uids: number[] = Array.isArray(searchResult) ? searchResult : [];
       // imapflow returns UIDs ascending; cap to most-recent if needed.
       const slice = uids.slice(-cap);
