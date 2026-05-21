@@ -24,6 +24,25 @@ async function main(): Promise<void> {
     slack = new SlackWebhookPoster(cfg.SLACK_WEBHOOK_URL, cfg.SLACK_CHANNEL);
   }
 
+  // Phase-3 keyword classifier (Dennis 2026-05-21). Separate poster
+  // targeting #alerts (SLACK_CHANNEL_ALERTS). Reuses SLACK_BACKEND_URL +
+  // SLACK_API_KEY from the digest path. In DRY_RUN mode falls through
+  // to the same console poster (single visible stream).
+  let alertsSlack: SlackPoster | undefined;
+  if (cfg.DRY_RUN) {
+    alertsSlack = slack;
+  } else if (
+    cfg.SLACK_CHANNEL_ALERTS &&
+    process.env.SLACK_BACKEND_URL &&
+    process.env.SLACK_API_KEY
+  ) {
+    alertsSlack = new BackendApiPoster(
+      process.env.SLACK_BACKEND_URL,
+      process.env.SLACK_API_KEY,
+      cfg.SLACK_CHANNEL_ALERTS,
+    );
+  }
+
   // Secrets-client selection. AwsSecretsClient is the documented production path,
   // but the favotrip EC2 instance currently has no IAM role attached and follows
   // the .env-file pattern shared by every other service in docker-compose
@@ -35,7 +54,7 @@ async function main(): Promise<void> {
     ? new EnvSecretsClient()
     : new AwsSecretsClient(cfg.AWS_REGION);
 
-  const runner = new DigestRunner({ cfg, secrets, slack });
+  const runner = new DigestRunner({ cfg, secrets, slack, alertsSlack });
 
   console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: 'startup', cron: cfg.CRON_SCHEDULE }));
 

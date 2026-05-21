@@ -1,6 +1,10 @@
 import { RepeatedMailerStore } from './classifier/repeated-mailer.service.js';
 import type { Config } from './config.js';
 import { buildDigestMessage } from './digest/digest.service.js';
+import {
+  KeywordAlertService,
+  KeywordDedupeStore,
+} from './digest/keyword-alert.service.js';
 import type { SlackPoster } from './digest/slack.service.js';
 import { QueueTaskDispatcher } from './dispatcher/queue-task.service.js';
 import { ImapFetchService } from './imap/imap.service.js';
@@ -12,6 +16,13 @@ export interface RunnerDeps {
   cfg: Config;
   secrets: SecretsClient;
   slack: SlackPoster;
+  /**
+   * Optional separate poster for Phase-3 keyword alerts (#alerts).
+   * When omitted but cfg.SLACK_CHANNEL_ALERTS is set, the runner falls
+   * back to `slack` (single-channel dev case). Production wires this
+   * explicitly to a BackendApiPoster pointing at the #alerts channelId.
+   */
+  alertsSlack?: SlackPoster;
   log?: (level: 'info' | 'warn' | 'error', msg: string, meta?: Record<string, unknown>) => void;
 }
 
@@ -20,6 +31,10 @@ export class DigestRunner {
   private readonly hashStore: RepeatedMailerStore;
   private readonly log: NonNullable<RunnerDeps['log']>;
   private readonly dispatcher: QueueTaskDispatcher | null;
+  private readonly keywordAlerts: {
+    service: KeywordAlertService;
+    store: KeywordDedupeStore;
+  } | null;
 
   constructor(private readonly deps: RunnerDeps) {
     this.state = new LastRunStore(deps.cfg.STATE_FILE);
@@ -46,6 +61,26 @@ export class DigestRunner {
       this.log('info', 'queue.task.enabled', { url: deps.cfg.QUEUE_TASK_URL });
     } else {
       this.dispatcher = null;
+    }
+
+    // Phase-3 keyword classifier (Dennis 2026-05-21). Enabled when
+    // SLACK_CHANNEL_ALERTS is set AND an alertsSlack poster is wired
+    // (or we fall back to the digest poster for dev/test).
+    if (deps.cfg.SLACK_CHANNEL_ALERTS) {
+      const poster = deps.alertsSlack ?? deps.slack;
+      const store = new KeywordDedupeStore(deps.cfg.KEYWORD_DEDUPE_FILE);
+      const service = new KeywordAlertService({
+        poster,
+        store,
+        salt: deps.cfg.HASH_SALT,
+        log: this.log,
+      });
+      this.keywordAlerts = { service, store };
+      this.log('info', 'keyword.alerts.enabled', {
+        channel: deps.cfg.SLACK_CHANNEL_ALERTS,
+      });
+    } else {
+      this.keywordAlerts = null;
     }
   }
 
@@ -90,6 +125,23 @@ export class DigestRunner {
     // not crash the mailbox cycle.
     if (this.dispatcher && processed.length > 0) {
       await this.dispatcher.dispatchHighPriority(processed);
+    }
+
+    // Phase-3 keyword alerts (Dennis 2026-05-21). Posts P0/P1 to
+    // #alerts (cfg.SLACK_CHANNEL_ALERTS). Dedupe state is persisted
+    // across runs so the same (severity, thread, day) doesn't re-fire.
+    // Service swallows per-post errors so a Slack hiccup doesn't kill
+    // the cycle.
+    if (this.keywordAlerts && processed.length > 0) {
+      await this.keywordAlerts.store.load();
+      this.keywordAlerts.store.prune(now);
+      const r = await this.keywordAlerts.service.flush(processed, now);
+      await this.keywordAlerts.store.save();
+      this.log('info', 'keyword.alerts.flushed', {
+        emitted: r.emitted,
+        skippedDedupe: r.skippedDedupe,
+        errors: r.errors,
+      });
     }
 
     this.hashStore.prune(now);

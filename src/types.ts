@@ -43,6 +43,24 @@ export interface Classification {
 export interface ProcessedMail extends MaskedMail, Classification {
   flags: ManipulationFlag[];
   priority: 'NORMAL' | 'HIGH';
+  /**
+   * Phase-3 keyword classifier output (Dennis 2026-05-21). Populated by
+   * the pipeline when a P0/P1 keyword matches. null/undefined when no
+   * keyword matched. The 6-bucket `bucket` field is unaffected — this
+   * is an ADDITIONAL signal, not a replacement.
+   */
+  keywordHit?: KeywordHitSummary | null;
+}
+
+/**
+ * Public-shape mirror of `classifier/keyword-monitor.service.ts`'s
+ * `KeywordHit`. Defined here to keep the type tree free of cycles
+ * between types.ts and the classifier service.
+ */
+export interface KeywordHitSummary {
+  severity: 'P0' | 'P1';
+  keywords: string[];
+  runbook: string;
 }
 
 export interface DigestStats {

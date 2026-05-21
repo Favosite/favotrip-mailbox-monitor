@@ -37,6 +37,7 @@ function mkCfg(overrides: Partial<Config> = {}): Config {
     DRY_RUN: true,
     LOG_LEVEL: 'info',
     QUEUE_TASK_TIMEOUT_MS: 10000,
+    KEYWORD_DEDUPE_FILE: path.join(dir, 'keyword-dedupe.json'),
     ...overrides,
   };
 }
