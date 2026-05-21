@@ -1,4 +1,5 @@
 import { classify } from './classifier/classifier.service.js';
+import { classifyKeywords } from './classifier/keyword-monitor.service.js';
 import { detectManipulationFlags } from './classifier/manipulation-flag.service.js';
 import { RepeatedMailerStore } from './classifier/repeated-mailer.service.js';
 import { maskBody, maskFromHeader, maskSubject } from './pii-mask/pii-mask.service.js';
@@ -18,7 +19,21 @@ export function processMails(raw: RawMail[], hashStore: RepeatedMailerStore): Pr
       flags.push('repeated_mailer');
     }
 
-    const priority: 'NORMAL' | 'HIGH' = flags.length > 0 ? 'HIGH' : 'NORMAL';
+    // Phase-3 keyword classifier (Dennis 2026-05-21). Runs in parallel
+    // with the existing 6-bucket classifier on the RAW (pre-mask)
+    // subject+body — PII-mask redacts whole bodies for IBAN/medical
+    // content (manualOnly=true) so we'd otherwise miss "kan niet
+    // betalen" in those mails. The hit itself only ever touches MASKED
+    // fields when posting to Slack.
+    const keywordHit = classifyKeywords({ subject: m.subject, body: m.body });
+
+    // P0/P1 keyword hits escalate priority to HIGH (mirrors the
+    // manipulation-flag escalation above). Downstream Slack #alerts
+    // post is handled by KeywordAlertService in the runner, but the
+    // priority bump also helps the queue-task dispatcher route these
+    // through the HIGH-priority path.
+    const priority: 'NORMAL' | 'HIGH' =
+      flags.length > 0 || keywordHit !== null ? 'HIGH' : 'NORMAL';
 
     processed.push({
       uid: m.uid,
@@ -35,6 +50,7 @@ export function processMails(raw: RawMail[], hashStore: RepeatedMailerStore): Pr
       confidence: classification.confidence,
       flags,
       priority,
+      keywordHit,
     });
   }
   return processed;

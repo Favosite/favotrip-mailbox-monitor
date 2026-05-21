@@ -44,6 +44,17 @@ const ConfigSchema = z.object({
   QUEUE_TASK_URL: z.string().url().optional(),
   QUEUE_TASK_API_KEY: z.string().min(1).optional(),
   QUEUE_TASK_TIMEOUT_MS: z.coerce.number().int().positive().default(10000),
+
+  // Phase-3 keyword classifier (Dennis 2026-05-21). When set, P0/P1
+  // keyword hits get posted to this channel via the same backend
+  // /monitor/slack-notify endpoint the digest uses (SLACK_BACKEND_URL +
+  // SLACK_API_KEY are reused). Leave unset to disable keyword alerts —
+  // the digest behaviour is unchanged.
+  SLACK_CHANNEL_ALERTS: z.string().optional(),
+  /** Dedupe state file for keyword alerts. Same volume as state.json. */
+  KEYWORD_DEDUPE_FILE: z
+    .string()
+    .default('/var/lib/mailbox-monitor/keyword-dedupe.json'),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

@@ -18,6 +18,12 @@ services:
       HASH_SALT: ${HASH_SALT}
       DRY_RUN: ${DRY_RUN:-false}
       LOG_LEVEL: info
+      # Phase-3 keyword classifier (Dennis 2026-05-21). Leave unset to
+      # disable keyword alerts; the digest behaviour is unchanged. In
+      # prod the .env.mailbox-monitor file holds this value (see
+      # ~/favotrip/.env.mailbox-monitor on prod-EC2).
+      SLACK_CHANNEL_ALERTS: ${SLACK_CHANNEL_ALERTS:-}
+      KEYWORD_DEDUPE_FILE: /var/lib/mailbox-monitor/keyword-dedupe.json
     volumes:
       - mailbox-state:/var/lib/mailbox-monitor
 
