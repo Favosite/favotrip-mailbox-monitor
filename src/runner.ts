@@ -113,15 +113,20 @@ export class DigestRunner {
     let nextZeroPostAt = lastZeroPostAt;
 
     if (processed.length === 0) {
-      const sinceLastZero =
-        lastZeroPostAt === undefined
-          ? Infinity
-          : (now.getTime() - lastZeroPostAt.getTime()) / 60000;
-      if (sinceLastZero >= this.deps.cfg.ZERO_MAIL_POST_INTERVAL_MIN) {
-        await this.deps.slack.post(buildDigestMessage([], now));
-        nextZeroPostAt = now;
+      const intervalMin = this.deps.cfg.ZERO_MAIL_POST_INTERVAL_MIN;
+      if (intervalMin === undefined) {
+        this.log('info', 'zero.skip.disabled');
       } else {
-        this.log('info', 'zero.skip.rate.limited', { minSince: Math.round(sinceLastZero) });
+        const sinceLastZero =
+          lastZeroPostAt === undefined
+            ? Infinity
+            : (now.getTime() - lastZeroPostAt.getTime()) / 60000;
+        if (sinceLastZero >= intervalMin) {
+          await this.deps.slack.post(buildDigestMessage([], now));
+          nextZeroPostAt = now;
+        } else {
+          this.log('info', 'zero.skip.rate.limited', { minSince: Math.round(sinceLastZero) });
+        }
       }
     } else if (shouldSuppressBatch(processed, this.deps.cfg)) {
       // Suppression rule chosen by config:

@@ -18,7 +18,18 @@ const ConfigSchema = z.object({
   STATE_FILE: z.string().default('/var/lib/mailbox-monitor/state.json'),
   HASH_STORE_FILE: z.string().default('/var/lib/mailbox-monitor/sender-hashes.json'),
   HASH_SALT: z.string().min(8),
-  ZERO_MAIL_POST_INTERVAL_MIN: z.coerce.number().int().positive().default(60),
+  /**
+   * How often (minutes) to post a zero-mail notice to #team when no new
+   * mail has arrived. Omit (or leave unset) to disable zero-mail posts
+   * entirely — the default is OFF. Only set this if operators explicitly
+   * want periodic "mailbox quiet" confirmations.
+   *
+   * Rationale: zero-mail notices were originally opt-in but the default of
+   * 60 min caused noise in #team during quiet periods. Making it opt-in
+   * matches the interrupt-policy spirit: only interrupt when there is
+   * something actionable.
+   */
+  ZERO_MAIL_POST_INTERVAL_MIN: z.coerce.number().int().positive().optional(),
   REPEATED_MAILER_THRESHOLD: z.coerce.number().int().positive().default(3),
   REPEATED_MAILER_WINDOW_DAYS: z.coerce.number().int().positive().default(7),
   DRY_RUN: z
