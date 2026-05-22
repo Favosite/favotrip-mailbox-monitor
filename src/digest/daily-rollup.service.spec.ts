@@ -68,7 +68,38 @@ describe('buildDailyRollupMessage', () => {
       totalSuppressed: 3,
       byBucket: { booking_question: 3 },
     });
-    expect(text).toMatch(/cancellation\/refund\/partner\/needs-human-review.*immediately/);
+    // Per Dennis 2026-05-22 second iteration: needs_human_review is no
+    // longer an always-immediate bucket. The new footer lists the 3
+    // remaining time-sensitive buckets + mentions content-urgent signals
+    // (flags / keyword hits / URGENT_KEYWORDS) that override suppression.
+    expect(text).toMatch(/cancellation\/refund\/partner.*immediately/);
+    expect(text).toMatch(/URGENT_KEYWORDS|urgent/);
+  });
+
+  it('renders byReason breakdown when populated (NEW)', () => {
+    const text = buildDailyRollupMessage(new Date('2026-05-21T00:00:00Z'), {
+      totalSuppressed: 5,
+      byBucket: { booking_question: 4, needs_human_review: 1 },
+      byReason: {
+        low_priority: 3,
+        repeated_mailer_only: 1,
+        needs_human_review_nonurgent: 1,
+      },
+    });
+    expect(text).toMatch(/Reason breakdown/);
+    expect(text).toMatch(/3 routine LOW/);
+    expect(text).toMatch(/repeated_mailer noise/);
+    expect(text).toMatch(/needs_human_review without urgent/);
+  });
+
+  it('omits Reason breakdown for legacy entries without byReason (backward compat)', () => {
+    const text = buildDailyRollupMessage(new Date('2026-05-21T00:00:00Z'), {
+      totalSuppressed: 3,
+      byBucket: { booking_question: 3 },
+      // byReason absent
+    });
+    expect(text).not.toMatch(/Reason breakdown/);
+    expect(text).toMatch(/Bucket breakdown/);
   });
 });
 

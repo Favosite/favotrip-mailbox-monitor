@@ -1,4 +1,5 @@
 import type { Bucket } from '../types.js';
+import type { SuppressReason } from './interrupt-policy.js';
 import { SuppressedCountsStore } from '../state/suppressed-counts.service.js';
 import type { SlackPoster } from './slack.service.js';
 
@@ -81,24 +82,54 @@ export class DailyRollupService {
   }
 }
 
+const REASON_DISPLAY: Record<SuppressReason, string> = {
+  low_priority: 'routine LOW (booking_question / general_info / spam)',
+  repeated_mailer_only: 'repeated_mailer noise (no content urgency)',
+  needs_human_review_nonurgent: 'needs_human_review without urgent keyword',
+  other_routine: 'other routine',
+};
+
 export function buildDailyRollupMessage(
   day: Date,
-  entry: { totalSuppressed: number; byBucket: Partial<Record<Bucket, number>> } | undefined,
+  entry:
+    | {
+        totalSuppressed: number;
+        byBucket: Partial<Record<Bucket, number>>;
+        byReason?: Partial<Record<SuppressReason, number>>;
+      }
+    | undefined,
 ): string {
   const dayLabel = day.toISOString().slice(0, 10);
   if (!entry || entry.totalSuppressed === 0) {
-    return `:mailbox: Mailbox LOW-priority rollup ${dayLabel}: 0 suppressed (no routine traffic).`;
+    return `:mailbox: Mailbox routine rollup ${dayLabel}: 0 suppressed (no routine traffic).`;
   }
   const lines = [
-    `:mailbox: *Mailbox LOW-priority rollup ${dayLabel}*`,
-    `${entry.totalSuppressed} routine mail${entry.totalSuppressed === 1 ? '' : 's'} suppressed from immediate #team posts. Bucket breakdown:`,
+    `:mailbox: *Mailbox routine rollup ${dayLabel}*`,
+    `${entry.totalSuppressed} routine mail${entry.totalSuppressed === 1 ? '' : 's'} suppressed from immediate #team posts.`,
+    '',
+    '*Bucket breakdown:*',
   ];
-  const sorted = Object.entries(entry.byBucket).sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0));
-  for (const [bucket, count] of sorted) {
+  const sortedBuckets = Object.entries(entry.byBucket).sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0));
+  for (const [bucket, count] of sortedBuckets) {
     lines.push(`• ${count} ${BUCKET_DISPLAY[bucket as Bucket] ?? bucket}`);
   }
+  // Reason breakdown — only render if byReason is populated. Legacy
+  // entries from PR #10 era don't have byReason, in which case this
+  // section is skipped (operators see only the bucket breakdown they
+  // had before).
+  const reasonEntries = entry.byReason ? Object.entries(entry.byReason) : [];
+  if (reasonEntries.length > 0) {
+    lines.push('');
+    lines.push('*Reason breakdown:*');
+    const sortedReasons = reasonEntries.sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0));
+    for (const [reason, count] of sortedReasons) {
+      const label = REASON_DISPLAY[reason as SuppressReason] ?? reason;
+      lines.push(`• ${count} ${label}`);
+    }
+  }
+  lines.push('');
   lines.push(
-    '_Time-sensitive buckets (cancellation/refund/partner/needs-human-review) and HIGH-priority items still posted immediately at the time they arrived._',
+    '_Time-sensitive buckets (cancellation/refund/partner) and content-urgent signals (legal/chargeback/sob-story, P0/P1 keyword hits, manual-only PII redactions, and URGENT_KEYWORDS like "betaalmodule" / "voucher werkt niet" / "geld terug") still posted immediately at the time they arrived._',
   );
   return lines.join('\n');
 }
