@@ -55,6 +55,25 @@ const ConfigSchema = z.object({
   KEYWORD_DEDUPE_FILE: z
     .string()
     .default('/var/lib/mailbox-monitor/keyword-dedupe.json'),
+
+  // LOW-priority suppression (Dennis 2026-05-22 standing-mandate fix).
+  // When a 5-min batch contains only LOW-suppressible mails (priority=NORMAL,
+  // no keywordHit, no flags, not manual-only), the runner skips the
+  // immediate #team digest post and instead rolls counts into this state
+  // file for visibility in the 09:00 morning digest. HIGH/P0/P1 paths are
+  // unchanged. See src/digest/priority-gate.ts for the predicate.
+  SUPPRESSED_COUNTS_FILE: z
+    .string()
+    .default('/var/lib/mailbox-monitor/suppressed-counts.json'),
+  /**
+   * Disable LOW-priority suppression and restore pre-fix behaviour
+   * (every non-empty batch posts to #team). Default false — suppression is
+   * the new normal. Set to 'true'/'1' to revert.
+   */
+  SUPPRESS_LOW_PRIORITY_DISABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true' || v === '1'),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

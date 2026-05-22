@@ -5,12 +5,14 @@ import {
   KeywordAlertService,
   KeywordDedupeStore,
 } from './digest/keyword-alert.service.js';
+import { isAllLowPriority } from './digest/priority-gate.js';
 import type { SlackPoster } from './digest/slack.service.js';
 import { QueueTaskDispatcher } from './dispatcher/queue-task.service.js';
 import { ImapFetchService } from './imap/imap.service.js';
 import { processMails } from './pipeline.js';
 import type { SecretsClient } from './secrets/secrets.service.js';
 import { LastRunStore } from './state/last-run.service.js';
+import { SuppressedCountsStore } from './state/suppressed-counts.service.js';
 
 export interface RunnerDeps {
   cfg: Config;
@@ -29,6 +31,7 @@ export interface RunnerDeps {
 export class DigestRunner {
   private readonly state: LastRunStore;
   private readonly hashStore: RepeatedMailerStore;
+  private readonly suppressedCounts: SuppressedCountsStore;
   private readonly log: NonNullable<RunnerDeps['log']>;
   private readonly dispatcher: QueueTaskDispatcher | null;
   private readonly keywordAlerts: {
@@ -38,6 +41,7 @@ export class DigestRunner {
 
   constructor(private readonly deps: RunnerDeps) {
     this.state = new LastRunStore(deps.cfg.STATE_FILE);
+    this.suppressedCounts = new SuppressedCountsStore(deps.cfg.SUPPRESSED_COUNTS_FILE);
     this.hashStore = new RepeatedMailerStore({
       filePath: deps.cfg.HASH_STORE_FILE,
       salt: deps.cfg.HASH_SALT,
@@ -113,6 +117,26 @@ export class DigestRunner {
       } else {
         this.log('info', 'zero.skip.rate.limited', { minSince: Math.round(sinceLastZero) });
       }
+    } else if (
+      !this.deps.cfg.SUPPRESS_LOW_PRIORITY_DISABLED &&
+      isAllLowPriority(processed)
+    ) {
+      // Dennis 2026-05-22 standing-mandate fix: suppress immediate #team
+      // post when every mail is LOW (NORMAL priority, no keyword hit, no
+      // manipulation flag, not manual-only). Counts persist to the
+      // suppressed-counts state file for morning-digest visibility.
+      // HIGH/P0/P1 paths (queue-task dispatcher + keyword alerts below)
+      // still run for any non-suppressible mail in a mixed batch, but
+      // a wholly-LOW batch reaches this branch and the #team post is
+      // skipped entirely.
+      await this.suppressedCounts.load();
+      this.suppressedCounts.add(processed, now);
+      this.suppressedCounts.prune(now);
+      await this.suppressedCounts.save();
+      this.log('info', 'digest.skipped.all-low-priority', {
+        count: processed.length,
+        bucketCounts: countBuckets(processed),
+      });
     } else {
       await this.deps.slack.post(buildDigestMessage(processed, now));
     }
@@ -160,4 +184,12 @@ function defaultLog(
   const payload = { ts: new Date().toISOString(), level, msg, ...meta };
   // eslint-disable-next-line no-console
   console.log(JSON.stringify(payload));
+}
+
+function countBuckets(mails: ReadonlyArray<{ bucket: string }>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const m of mails) {
+    out[m.bucket] = (out[m.bucket] ?? 0) + 1;
+  }
+  return out;
 }
