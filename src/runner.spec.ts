@@ -31,7 +31,7 @@ function mkCfg(overrides: Partial<Config> = {}): Config {
     STATE_FILE: path.join(dir, 'state.json'),
     HASH_STORE_FILE: path.join(dir, 'hash.json'),
     HASH_SALT: 'a-test-salt',
-    ZERO_MAIL_POST_INTERVAL_MIN: 60,
+    // ZERO_MAIL_POST_INTERVAL_MIN intentionally omitted — default is OFF
     REPEATED_MAILER_THRESHOLD: 3,
     REPEATED_MAILER_WINDOW_DAYS: 7,
     DRY_RUN: true,
@@ -65,6 +65,31 @@ class CapturePoster implements SlackPoster {
 }
 
 describe('DigestRunner', () => {
+  it('zero-mail post is disabled by default (ZERO_MAIL_POST_INTERVAL_MIN unset)', async () => {
+    const cfg = mkCfg(); // ZERO_MAIL_POST_INTERVAL_MIN not set → disabled
+    const slack = new CapturePoster();
+
+    const { ImapFetchService } = await import('./imap/imap.service.js');
+    const spy = vi
+      .spyOn(ImapFetchService.prototype, 'fetchSince')
+      .mockResolvedValue([]);
+
+    const runner = new DigestRunner({
+      cfg,
+      secrets: new FakeSecrets(),
+      slack,
+      log: () => {},
+    });
+
+    // Run multiple times — zero-mail posts must never fire when interval is unset
+    await runner.runOnce(new Date('2026-05-22T10:00:00Z'));
+    await runner.runOnce(new Date('2026-05-22T10:05:00Z'));
+    await runner.runOnce(new Date('2026-05-22T11:00:00Z'));
+    expect(slack.posted.length).toBe(0);
+
+    spy.mockRestore();
+  });
+
   it('rate-limits zero-mail post: first run posts, second within window does not', async () => {
     const cfg = mkCfg({ ZERO_MAIL_POST_INTERVAL_MIN: 60 });
     const slack = new CapturePoster();
