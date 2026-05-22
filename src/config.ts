@@ -76,6 +76,26 @@ const ConfigSchema = z.object({
     .transform((v) => v === 'true' || v === '1'),
 
   /**
+   * Disable the new interrupt-policy gate (interrupt-policy.ts) and fall
+   * back to the PR #10 isAllLowPriority gate. Use this if the new gate
+   * starts mis-classifying real urgent traffic as routine; the runner
+   * will revert to the previous (more permissive) suppression rule
+   * without a redeploy. Default false — interrupt-policy is the new
+   * normal as of Dennis 2026-05-22 second iteration. Set to 'true'/'1'
+   * to revert.
+   *
+   * Hierarchy: SUPPRESS_LOW_PRIORITY_DISABLED dominates and reverts
+   * ALL the way to pre-PR-#10 (every non-empty batch posts). When that
+   * is false but INTERRUPT_GATE_DISABLED is true, runner falls back to
+   * the PR #10 isAllLowPriority gate. When both are false (default),
+   * the new interrupt-policy gate runs.
+   */
+  INTERRUPT_GATE_DISABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true' || v === '1'),
+
+  /**
    * Daily rollup cron expression. Posts a one-line summary of yesterday's
    * LOW-priority suppressed counts to #team. Default 0 8 * * * UTC =
    * 09:00 Europe/Amsterdam year-round (Dennis prefers no-DST clock).

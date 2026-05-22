@@ -5,6 +5,11 @@ import {
   KeywordAlertService,
   KeywordDedupeStore,
 } from './digest/keyword-alert.service.js';
+import {
+  classifyForSuppression,
+  classifyInterrupt,
+  isAllRoutine,
+} from './digest/interrupt-policy.js';
 import { isAllLowPriority } from './digest/priority-gate.js';
 import type { SlackPoster } from './digest/slack.service.js';
 import { QueueTaskDispatcher } from './dispatcher/queue-task.service.js';
@@ -13,6 +18,7 @@ import { processMails } from './pipeline.js';
 import type { SecretsClient } from './secrets/secrets.service.js';
 import { LastRunStore } from './state/last-run.service.js';
 import { SuppressedCountsStore } from './state/suppressed-counts.service.js';
+import type { ProcessedMail } from './types.js';
 
 export interface RunnerDeps {
   cfg: Config;
@@ -117,27 +123,49 @@ export class DigestRunner {
       } else {
         this.log('info', 'zero.skip.rate.limited', { minSince: Math.round(sinceLastZero) });
       }
-    } else if (
-      !this.deps.cfg.SUPPRESS_LOW_PRIORITY_DISABLED &&
-      isAllLowPriority(processed)
-    ) {
-      // Dennis 2026-05-22 standing-mandate fix: suppress immediate #team
-      // post when every mail is LOW (NORMAL priority, no keyword hit, no
-      // manipulation flag, not manual-only). Counts persist to the
-      // suppressed-counts state file for morning-digest visibility.
-      // HIGH/P0/P1 paths (queue-task dispatcher + keyword alerts below)
-      // still run for any non-suppressible mail in a mixed batch, but
-      // a wholly-LOW batch reaches this branch and the #team post is
-      // skipped entirely.
+    } else if (shouldSuppressBatch(processed, this.deps.cfg)) {
+      // Suppression rule chosen by config:
+      //   SUPPRESS_LOW_PRIORITY_DISABLED=true → never suppress (pre-PR-#10)
+      //   INTERRUPT_GATE_DISABLED=true        → PR #10 isAllLowPriority
+      //   default                             → interrupt-policy gate
+      //
+      // The decision lives in shouldSuppressBatch() so the runner stays
+      // readable. Per-mail reasons are persisted to the suppressed-counts
+      // state file so the 09:00 rollup can surface WHY each mail was
+      // suppressed (repeated_mailer_only, needs_human_review_nonurgent,
+      // low_priority, other_routine).
+      const classified = classifyForSuppression(processed);
       await this.suppressedCounts.load();
-      this.suppressedCounts.add(processed, now);
+      this.suppressedCounts.add(classified, now);
       this.suppressedCounts.prune(now);
       await this.suppressedCounts.save();
-      this.log('info', 'digest.skipped.all-low-priority', {
+      this.log('info', 'digest.skipped.all-routine', {
         count: processed.length,
         bucketCounts: countBuckets(processed),
+        reasonCounts: countReasons(classified),
+        gate: this.deps.cfg.INTERRUPT_GATE_DISABLED
+          ? 'isAllLowPriority(legacy)'
+          : 'isAllRoutine(interrupt-policy)',
       });
     } else {
+      // Either a fall-back env is set, OR at least one mail in the
+      // batch is interrupt-worthy. Log per-mail decisions for
+      // observability (no PII — only bucket + reason + detail strings,
+      // which never include raw subject/body content).
+      const decisions = processed.map((m) => ({
+        bucket: m.bucket,
+        decision: classifyInterrupt(m),
+      }));
+      this.log('info', 'digest.post.interrupt-or-fallback', {
+        count: processed.length,
+        interruptCount: decisions.filter((d) => d.decision.interrupt).length,
+        details: decisions.map((d) => ({
+          bucket: d.bucket,
+          interrupt: d.decision.interrupt,
+          reason: d.decision.reason,
+          detail: d.decision.detail,
+        })),
+      });
       await this.deps.slack.post(buildDigestMessage(processed, now));
     }
 
@@ -192,4 +220,31 @@ function countBuckets(mails: ReadonlyArray<{ bucket: string }>): Record<string, 
     out[m.bucket] = (out[m.bucket] ?? 0) + 1;
   }
   return out;
+}
+
+function countReasons(
+  items: ReadonlyArray<{ reason: string }>,
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const it of items) {
+    out[it.reason] = (out[it.reason] ?? 0) + 1;
+  }
+  return out;
+}
+
+/**
+ * Decide whether the whole batch should be suppressed (no #team post).
+ *
+ * Hierarchy of env-flag fall-backs (Dennis 2026-05-22 second iteration):
+ *   SUPPRESS_LOW_PRIORITY_DISABLED=true → never suppress (revert to pre-PR-#10)
+ *   INTERRUPT_GATE_DISABLED=true        → fall back to PR #10 isAllLowPriority
+ *   default                             → new interrupt-policy isAllRoutine
+ */
+function shouldSuppressBatch(
+  processed: ProcessedMail[],
+  cfg: { SUPPRESS_LOW_PRIORITY_DISABLED?: boolean; INTERRUPT_GATE_DISABLED?: boolean },
+): boolean {
+  if (cfg.SUPPRESS_LOW_PRIORITY_DISABLED) return false;
+  if (cfg.INTERRUPT_GATE_DISABLED) return isAllLowPriority(processed);
+  return isAllRoutine(processed);
 }
