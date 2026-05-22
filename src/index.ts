@@ -1,8 +1,10 @@
 import cron from 'node-cron';
 import { loadConfig } from './config.js';
+import { DailyRollupService } from './digest/daily-rollup.service.js';
 import { BackendApiPoster, ConsoleLogPoster, SlackWebhookPoster, type SlackPoster } from './digest/slack.service.js';
 import { AwsSecretsClient, EnvSecretsClient, type SecretsClient } from './secrets/secrets.service.js';
 import { DigestRunner } from './runner.js';
+import { SuppressedCountsStore } from './state/suppressed-counts.service.js';
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -66,6 +68,31 @@ async function main(): Promise<void> {
     });
   });
 
+  // Daily rollup of LOW-priority suppressed counts (Dennis 2026-05-22).
+  // Reads SUPPRESSED_COUNTS_FILE, posts a one-line summary of yesterday's
+  // totals to #team at DAILY_ROLLUP_CRON (default 08:00 UTC = 09:00
+  // Europe/Amsterdam). Skipped entirely when DAILY_ROLLUP_CRON is empty.
+  // Posts go to the same #team channel via the existing slack poster;
+  // no new auth or webhook needed.
+  let rollupTask: ReturnType<typeof cron.schedule> | undefined;
+  if (cfg.DAILY_ROLLUP_CRON.trim().length > 0) {
+    const rollupSvc = new DailyRollupService({
+      store: new SuppressedCountsStore(cfg.SUPPRESSED_COUNTS_FILE),
+      slack,
+      log: (level, msg, meta) => {
+        console.log(JSON.stringify({ ts: new Date().toISOString(), level, msg, ...meta }));
+      },
+    });
+    rollupTask = cron.schedule(cfg.DAILY_ROLLUP_CRON, () => {
+      rollupSvc.runOnce().catch((err: Error) => {
+        console.log(
+          JSON.stringify({ ts: new Date().toISOString(), level: 'error', msg: 'daily-rollup.runOnce.failed', err: err.message }),
+        );
+      });
+    });
+    console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: 'daily-rollup.scheduled', cron: cfg.DAILY_ROLLUP_CRON }));
+  }
+
   // Run once at startup so we don't wait 5 min for first signal-of-life.
   runner.runOnce().catch((err: Error) => {
     console.log(
@@ -76,6 +103,7 @@ async function main(): Promise<void> {
   const shutdown = async (sig: string): Promise<void> => {
     console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: 'shutdown', sig }));
     task.stop();
+    rollupTask?.stop();
     process.exit(0);
   };
   process.on('SIGINT', () => void shutdown('SIGINT'));

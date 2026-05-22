@@ -55,6 +55,36 @@ const ConfigSchema = z.object({
   KEYWORD_DEDUPE_FILE: z
     .string()
     .default('/var/lib/mailbox-monitor/keyword-dedupe.json'),
+
+  // LOW-priority suppression (Dennis 2026-05-22 standing-mandate fix).
+  // When a 5-min batch contains only LOW-suppressible mails (priority=NORMAL,
+  // no keywordHit, no flags, not manual-only), the runner skips the
+  // immediate #team digest post and instead rolls counts into this state
+  // file for visibility in the 09:00 morning digest. HIGH/P0/P1 paths are
+  // unchanged. See src/digest/priority-gate.ts for the predicate.
+  SUPPRESSED_COUNTS_FILE: z
+    .string()
+    .default('/var/lib/mailbox-monitor/suppressed-counts.json'),
+  /**
+   * Disable LOW-priority suppression and restore pre-fix behaviour
+   * (every non-empty batch posts to #team). Default false — suppression is
+   * the new normal. Set to 'true'/'1' to revert.
+   */
+  SUPPRESS_LOW_PRIORITY_DISABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true' || v === '1'),
+
+  /**
+   * Daily rollup cron expression. Posts a one-line summary of yesterday's
+   * LOW-priority suppressed counts to #team. Default 0 8 * * * UTC =
+   * 09:00 Europe/Amsterdam year-round (Dennis prefers no-DST clock).
+   *
+   * Set to empty string to disable the daily rollup entirely (suppressed
+   * counts will then live only in SUPPRESSED_COUNTS_FILE, visible only by
+   * direct inspection).
+   */
+  DAILY_ROLLUP_CRON: z.string().default('0 8 * * *'),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
