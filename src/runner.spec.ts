@@ -40,6 +40,7 @@ function mkCfg(overrides: Partial<Config> = {}): Config {
     KEYWORD_DEDUPE_FILE: path.join(dir, 'keyword-dedupe.json'),
     SUPPRESSED_COUNTS_FILE: path.join(dir, 'suppressed-counts.json'),
     SUPPRESS_LOW_PRIORITY_DISABLED: false,
+    DAILY_ROLLUP_CRON: '0 8 * * *',
     ...overrides,
   };
 }

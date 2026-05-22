@@ -74,6 +74,17 @@ const ConfigSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true' || v === '1'),
+
+  /**
+   * Daily rollup cron expression. Posts a one-line summary of yesterday's
+   * LOW-priority suppressed counts to #team. Default 0 8 * * * UTC =
+   * 09:00 Europe/Amsterdam year-round (Dennis prefers no-DST clock).
+   *
+   * Set to empty string to disable the daily rollup entirely (suppressed
+   * counts will then live only in SUPPRESSED_COUNTS_FILE, visible only by
+   * direct inspection).
+   */
+  DAILY_ROLLUP_CRON: z.string().default('0 8 * * *'),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
