@@ -1,6 +1,6 @@
 import { RepeatedMailerStore } from './classifier/repeated-mailer.service.js';
 import type { Config } from './config.js';
-import { buildDigestMessage } from './digest/digest.service.js';
+import { buildDigestMessage, JEANNE_SLACK_UID } from './digest/digest.service.js';
 import {
   KeywordAlertService,
   KeywordDedupeStore,
@@ -17,6 +17,7 @@ import { ImapFetchService } from './imap/imap.service.js';
 import { processMails } from './pipeline.js';
 import type { SecretsClient } from './secrets/secrets.service.js';
 import { LastRunStore } from './state/last-run.service.js';
+import { OwnerPostCooldownStore } from './state/owner-post-cooldown.service.js';
 import { SuppressedCountsStore } from './state/suppressed-counts.service.js';
 import type { ProcessedMail } from './types.js';
 
@@ -38,6 +39,7 @@ export class DigestRunner {
   private readonly state: LastRunStore;
   private readonly hashStore: RepeatedMailerStore;
   private readonly suppressedCounts: SuppressedCountsStore;
+  private readonly ownerCooldown: OwnerPostCooldownStore;
   private readonly log: NonNullable<RunnerDeps['log']>;
   private readonly dispatcher: QueueTaskDispatcher | null;
   private readonly keywordAlerts: {
@@ -48,6 +50,7 @@ export class DigestRunner {
   constructor(private readonly deps: RunnerDeps) {
     this.state = new LastRunStore(deps.cfg.STATE_FILE);
     this.suppressedCounts = new SuppressedCountsStore(deps.cfg.SUPPRESSED_COUNTS_FILE);
+    this.ownerCooldown = new OwnerPostCooldownStore(deps.cfg.OWNER_POST_COOLDOWN_FILE);
     this.hashStore = new RepeatedMailerStore({
       filePath: deps.cfg.HASH_STORE_FILE,
       salt: deps.cfg.HASH_SALT,
@@ -181,14 +184,51 @@ export class DigestRunner {
         })),
       });
       const digestText = buildDigestMessage(processed, now);
-      if (digestText) {
-        await this.deps.slack.post(digestText);
-      } else {
+      if (!digestText) {
         // Defense-in-depth (Dennis 2026-05-23): buildDigestMessage
         // returns "" when there's nothing actionable to say. Never
         // post an empty body to #team. Detail stays in the structured
         // log emitted just above.
         this.log('info', 'digest.skipped.empty-render');
+      } else {
+        // Owner-post cooldown (Dennis 2026-05-23 third iteration).
+        // Max 1 top-level mailbox-action post per owner per
+        // MAILBOX_OWNER_COOLDOWN_MIN, UNLESS a P0/P1 keywordHit is
+        // present in the batch (customer impact overrides dedup).
+        await this.ownerCooldown.load();
+        const hasP0P1 = processed.some(
+          (m) => m.keywordHit && (m.keywordHit.severity === 'P0' || m.keywordHit.severity === 'P1'),
+        );
+        const cooldownMin = this.deps.cfg.MAILBOX_OWNER_COOLDOWN_MIN;
+        const inCooldown = this.ownerCooldown.inCooldown(JEANNE_SLACK_UID, now, cooldownMin);
+        if (inCooldown && !hasP0P1) {
+          // Capture the urgent mails into the suppressed-counts state
+          // so the daily rollup can surface them. Reason 'other_routine'
+          // because the per-mail interrupt-policy DID flag them as
+          // urgent; suppression is happening at the cross-mail
+          // dedup layer, not the per-mail one.
+          await this.suppressedCounts.load();
+          this.suppressedCounts.add(
+            processed.map((m) => ({ mail: m, reason: 'other_routine' as const })),
+            now,
+          );
+          this.suppressedCounts.prune(now);
+          await this.suppressedCounts.save();
+          const lastAt = this.ownerCooldown.lastPostAt(JEANNE_SLACK_UID);
+          this.log('info', 'digest.skipped.owner-cooldown', {
+            ownerUid: JEANNE_SLACK_UID,
+            cooldownMin,
+            lastPostAt: lastAt?.toISOString(),
+            sinceLastMin: lastAt
+              ? Math.round((now.getTime() - lastAt.getTime()) / 60000)
+              : null,
+            count: processed.length,
+          });
+        } else {
+          await this.deps.slack.post(digestText);
+          this.ownerCooldown.markPosted(JEANNE_SLACK_UID, now);
+          await this.ownerCooldown.save();
+        }
       }
     }
 

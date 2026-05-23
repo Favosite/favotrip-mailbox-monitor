@@ -42,6 +42,8 @@ function mkCfg(overrides: Partial<Config> = {}): Config {
     SUPPRESS_LOW_PRIORITY_DISABLED: false,
     INTERRUPT_GATE_DISABLED: false,
     DAILY_ROLLUP_CRON: '0 8 * * *',
+    OWNER_POST_COOLDOWN_FILE: path.join(dir, 'owner-post-cooldown.json'),
+    MAILBOX_OWNER_COOLDOWN_MIN: 60,
     ...overrides,
   };
 }
@@ -145,7 +147,7 @@ describe('DigestRunner', () => {
 
     await runner.runOnce(new Date('2026-05-08T10:01:00Z'));
     expect(slack.posted.length).toBe(1);
-    expect(slack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel \d+ klantmail/);
+    expect(slack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel (urgente klantmail|\d+ urgente klantmails):/);
     expect(slack.posted[0]).not.toContain('cancellation_request'); // doctrine: no bucket leak
     spy.mockRestore();
   });
@@ -209,8 +211,10 @@ describe('DigestRunner', () => {
 
     await runner.runOnce(new Date('2026-05-22T10:11:00Z'));
     expect(slack.posted.length).toBe(1);
-    expect(slack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel \d+ klantmail/);
-    expect(slack.posted[0]).toContain('HIGH');
+    expect(slack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel (urgente klantmail|\d+ urgente klantmails):/);
+    // 2026-05-23 short format: HIGH no longer leaks; assert the urgent
+    // reason fragment for legal_threat instead.
+    expect(slack.posted[0]).toContain('juridisch');
     spy.mockRestore();
   });
 
@@ -243,7 +247,7 @@ describe('DigestRunner', () => {
     expect(alertsSlack.posted.length).toBe(1);
     expect(alertsSlack.posted[0]).toMatch(/P0|P1/);
     expect(teamSlack.posted.length).toBe(1);
-    expect(teamSlack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel \d+ klantmail/);
+    expect(teamSlack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel (urgente klantmail|\d+ urgente klantmails):/);
     spy.mockRestore();
   });
 
@@ -273,7 +277,13 @@ describe('DigestRunner', () => {
     spy.mockRestore();
   });
 
-  it('SUPPRESS_LOW_PRIORITY_DISABLED=true reverts to pre-fix behaviour (LOW posts to #team)', async () => {
+  it('SUPPRESS_LOW_PRIORITY_DISABLED=true reverts to pre-fix behaviour (urgent mail still posts)', async () => {
+    // Dennis 2026-05-23 third iteration: the bypass flag only bypasses
+    // the runner-side gate; the digest formatter is a defense-in-depth
+    // last line. Non-urgent mail in a bypass-batch still returns ""
+    // from buildDigestMessage and is suppressed. Use an urgent mail
+    // (refund_request keyword) to assert the bypass is still effective
+    // for legitimate traffic.
     const cfg = mkCfg({ SUPPRESS_LOW_PRIORITY_DISABLED: true });
     const slack = new CapturePoster();
 
@@ -283,8 +293,8 @@ describe('DigestRunner', () => {
         uid: 1,
         fromAddress: 'kees@example.com',
         toAddress: 'klantenservice@favotrip.nl',
-        subject: 'Vraag over mijn boeking',
-        body: 'Kan iemand mij helpen?',
+        subject: 'refund please',
+        body: 'ik wil geld terug',
         date: new Date('2026-05-22T10:10:00Z'),
       },
     ]);
@@ -384,7 +394,7 @@ describe('DigestRunner', () => {
         date: new Date('2026-05-22T15:00:00Z') },
     ], slack);
     expect(slack.posted.length).toBe(1);
-    expect(slack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel \d+ klantmail/);
+    expect(slack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel (urgente klantmail|\d+ urgente klantmails):/);
   });
 
   it('Scenario 7: cancellation_request → directly posted (compliant owner-tagged message)', async () => {
@@ -397,7 +407,7 @@ describe('DigestRunner', () => {
         date: new Date('2026-05-22T15:00:00Z') },
     ], slack);
     expect(slack.posted.length).toBe(1);
-    expect(slack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel \d+ klantmail/);
+    expect(slack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel (urgente klantmail|\d+ urgente klantmails):/);
     expect(slack.posted[0]).not.toContain('cancellation_request'); // doctrine: no bucket leak
   });
 
@@ -411,18 +421,22 @@ describe('DigestRunner', () => {
         date: new Date('2026-05-22T15:00:00Z') },
     ], slack);
     expect(slack.posted.length).toBe(1);
-    expect(slack.posted[0]).toMatch(/HIGH|legal_threat/);
+    // 2026-05-23 short format: reason fragment for legal_threat is "juridisch".
+    expect(slack.posted[0]).toMatch(/juridisch/);
   });
 
-  it('Scenario: INTERRUPT_GATE_DISABLED reverts to PR #10 (isAllLowPriority) — needs_human_review now posts again', async () => {
+  it('Scenario: INTERRUPT_GATE_DISABLED reverts to PR #10 (isAllLowPriority), urgent mail still posts', async () => {
+    // Dennis 2026-05-23 third iteration: bypass flag only opens the
+    // runner gate; the digest formatter is the last line of defense.
+    // needs_human_review without urgent content no longer reaches
+    // #team even with the bypass. Use a refund-keyword mail to assert
+    // the bypass remains effective for legitimate traffic.
     const cfg = mkCfg({ INTERRUPT_GATE_DISABLED: true });
     const slack = new CapturePoster();
     await runWithImap(cfg, [
       { uid: 1, fromAddress: 'kort@example.com', toAddress: 'klantenservice@favotrip.nl',
-        subject: 'hoi', body: 'a', date: new Date('2026-05-22T15:00:00Z') },
+        subject: 'refund', body: 'ik wil geld terug', date: new Date('2026-05-22T15:00:00Z') },
     ], slack);
-    // Under PR #10 logic, needs_human_review was NOT in LOW_BUCKETS,
-    // so this would NOT be suppressed → posted.
     expect(slack.posted.length).toBe(1);
   });
 
@@ -453,5 +467,268 @@ describe('DigestRunner', () => {
         ['low_priority', 'needs_human_review_nonurgent', 'other_routine'].includes(r),
       ),
     ).toBe(true);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────
+// Dennis 2026-05-23 third-iteration acceptance scenarios.
+// Six scenarios for the new actionable-spam policy. Cooldown defaults
+// to 60 min so the second mail within 60 min of the first POST must
+// be bundled or suppressed (never two top-level posts).
+// ──────────────────────────────────────────────────────────────────
+
+describe('DigestRunner — 2026-05-23 actionable-spam policy', () => {
+  // Local helper (parallels the one inside the outer describe; vitest
+  // scoping forbids cross-describe access to nested function decls).
+  async function runWithImap(
+    cfg: Config,
+    raws: Array<{
+      uid: number;
+      fromAddress: string;
+      toAddress: string;
+      subject: string;
+      body: string;
+      date: Date;
+    }>,
+    slack: CapturePoster,
+    now: Date = new Date('2026-05-23T20:30:30Z'),
+  ): Promise<void> {
+    const { ImapFetchService } = await import('./imap/imap.service.js');
+    const spy = vi.spyOn(ImapFetchService.prototype, 'fetchSince').mockResolvedValue(raws);
+    const runner = new DigestRunner({
+      cfg,
+      secrets: new FakeSecrets(),
+      slack,
+      log: () => {},
+    });
+    await runner.runOnce(now);
+    spy.mockRestore();
+  }
+
+  it('Scenario A: manual-only mail without urgent keyword → NO #team post', async () => {
+    // ProcessedMail.manualOnly is set by the pipeline when masking
+    // strips PII (IBAN/medical). The classifier still picks a real
+    // bucket; we use general_info + benign body so nothing else fires.
+    const cfg = mkCfg();
+    const slack = new CapturePoster();
+    await runWithImap(
+      cfg,
+      [
+        {
+          uid: 1,
+          fromAddress: 'klant@example.com',
+          toAddress: 'klantenservice@favotrip.nl',
+          subject: 'mijn iban is NL11 RABO 0123 4567 89',
+          body: 'graag bevestigen, gr klant',
+          date: new Date('2026-05-23T20:30:00Z'),
+        },
+      ],
+      slack,
+    );
+    expect(slack.posted.length).toBe(0);
+  });
+
+  it('Scenario B: needs_human_review without urgent keyword → NO #team post', async () => {
+    const cfg = mkCfg();
+    const slack = new CapturePoster();
+    await runWithImap(
+      cfg,
+      [
+        {
+          uid: 1,
+          fromAddress: 'kort@example.com',
+          toAddress: 'klantenservice@favotrip.nl',
+          subject: 'hoi',
+          body: 'a',
+          date: new Date('2026-05-23T20:31:00Z'),
+        },
+      ],
+      slack,
+    );
+    expect(slack.posted.length).toBe(0);
+  });
+
+  it('Scenario C: repeated_mailer-only HIGH → NO #team post', async () => {
+    // Same sender 4x within window → repeated_mailer flag → HIGH.
+    // Without any urgent keyword/bucket/flag this must NOT post.
+    const cfg = mkCfg();
+    const slack = new CapturePoster();
+    const baseRaws = [1, 2, 3, 4].map((uid) => ({
+      uid,
+      fromAddress: 'repeat@example.com',
+      toAddress: 'klantenservice@favotrip.nl',
+      subject: `vraag ${uid}`,
+      body: 'wanneer kan ik inchecken?',
+      date: new Date(`2026-05-23T2${uid}:00:00Z`),
+    }));
+    await runWithImap(cfg, baseRaws, slack);
+    expect(slack.posted.length).toBe(0);
+  });
+
+  it('Scenario D: "voucher werkt niet" urgent keyword → short ACTION post', async () => {
+    const cfg = mkCfg();
+    const slack = new CapturePoster();
+    await runWithImap(
+      cfg,
+      [
+        {
+          uid: 1,
+          fromAddress: 'klant@example.com',
+          toAddress: 'klantenservice@favotrip.nl',
+          subject: 'help',
+          body: 'mijn voucher werkt niet',
+          date: new Date('2026-05-23T20:30:00Z'),
+        },
+      ],
+      slack,
+    );
+    expect(slack.posted.length).toBe(1);
+    // The keyword classifier also tags this as P1 ("voucher werkt
+    // niet" is in the P1 runbook); classifyInterrupt checks
+    // keywordHit before URGENT_KEYWORDS, so the reason fragment is
+    // "P1" or "voucher werkt niet" depending on classifier wiring.
+    // Both are valid short urgency labels per Dennis 2026-05-23.
+    expect(slack.posted[0]).toMatch(
+      /^<@U07TM7DKMUF> ACTION: behandel urgente klantmail: (P1|voucher werkt niet)\.$/,
+    );
+  });
+
+  it('Scenario E: two manual-only mails within 60 min → at most one #team post', async () => {
+    // First mail urgent (refund) → posts. Second mail urgent within
+    // 60 min → suppressed by owner-cooldown.
+    const cfg = mkCfg();
+    const slack = new CapturePoster();
+
+    const { ImapFetchService } = await import('./imap/imap.service.js');
+    const spy = vi.spyOn(ImapFetchService.prototype, 'fetchSince');
+
+    spy.mockResolvedValueOnce([
+      {
+        uid: 1,
+        fromAddress: 'a@example.com',
+        toAddress: 'klantenservice@favotrip.nl',
+        subject: 'refund please',
+        body: 'ik wil geld terug',
+        date: new Date('2026-05-23T20:30:00Z'),
+      },
+    ]);
+
+    const runner = new DigestRunner({
+      cfg,
+      secrets: new FakeSecrets(),
+      slack,
+      log: () => {},
+    });
+    await runner.runOnce(new Date('2026-05-23T20:30:30Z'));
+    expect(slack.posted.length).toBe(1);
+
+    // Second urgent mail 20 min later, within the 60-min cooldown.
+    spy.mockResolvedValueOnce([
+      {
+        uid: 2,
+        fromAddress: 'b@example.com',
+        toAddress: 'klantenservice@favotrip.nl',
+        subject: 'refund',
+        body: 'geld terug graag',
+        date: new Date('2026-05-23T20:50:00Z'),
+      },
+    ]);
+    await runner.runOnce(new Date('2026-05-23T20:50:30Z'));
+    expect(slack.posted.length).toBe(1); // still 1 → second one suppressed
+
+    spy.mockRestore();
+  });
+
+  it('Scenario F: NO bucket/reason breakdown in #team post (canonical format)', async () => {
+    const cfg = mkCfg();
+    const slack = new CapturePoster();
+    await runWithImap(
+      cfg,
+      [
+        {
+          uid: 1,
+          fromAddress: 'klant@example.com',
+          toAddress: 'klantenservice@favotrip.nl',
+          subject: 'annulering',
+          body: 'graag annuleren',
+          date: new Date('2026-05-23T20:30:00Z'),
+        },
+        {
+          uid: 2,
+          fromAddress: 'klant2@example.com',
+          toAddress: 'klantenservice@favotrip.nl',
+          subject: 'refund',
+          body: 'ik wil geld terug',
+          date: new Date('2026-05-23T20:30:00Z'),
+        },
+      ],
+      slack,
+    );
+    expect(slack.posted.length).toBe(1);
+    const post = slack.posted[0];
+    for (const banned of [
+      'booking_question',
+      'general_info',
+      'spam_out_of_scope',
+      'needs_human_review',
+      'manual-only',
+      'HIGH',
+      'klantenservice@favotrip.nl',
+      'wacht op review',
+      'Bucket counts',
+      'Klantenservice digest',
+    ]) {
+      expect(post).not.toContain(banned);
+    }
+    expect(post).toMatch(/^<@U07TM7DKMUF> ACTION: behandel/);
+  });
+
+  it('Cooldown bypass: P1+ keywordHit posts even within cooldown window', async () => {
+    const cfg = mkCfg();
+    const slack = new CapturePoster();
+
+    const { ImapFetchService } = await import('./imap/imap.service.js');
+    const spy = vi.spyOn(ImapFetchService.prototype, 'fetchSince');
+
+    spy.mockResolvedValueOnce([
+      {
+        uid: 1,
+        fromAddress: 'a@example.com',
+        toAddress: 'klantenservice@favotrip.nl',
+        subject: 'refund please',
+        body: 'ik wil geld terug',
+        date: new Date('2026-05-23T20:30:00Z'),
+      },
+    ]);
+
+    const runner = new DigestRunner({
+      cfg,
+      secrets: new FakeSecrets(),
+      slack,
+      log: () => {},
+    });
+    await runner.runOnce(new Date('2026-05-23T20:30:30Z'));
+    expect(slack.posted.length).toBe(1);
+
+    // P0 keyword that the keyword-monitor classifier flags (e.g.
+    // "kan niet betalen"). Within cooldown but MUST bypass.
+    spy.mockResolvedValueOnce([
+      {
+        uid: 2,
+        fromAddress: 'b@example.com',
+        toAddress: 'klantenservice@favotrip.nl',
+        subject: 'kan niet betalen',
+        body: 'betaalmodule kapot, ik wil betalen maar het lukt niet',
+        date: new Date('2026-05-23T20:45:00Z'),
+      },
+    ]);
+    await runner.runOnce(new Date('2026-05-23T20:45:30Z'));
+    // The keyword-monitor classifies "kan niet betalen" + "betaalmodule"
+    // as a P1 hit; that bypasses the owner-cooldown so the 2nd post
+    // also lands in #team. This is the WANTED behaviour: customer
+    // can't pay -> always-on alert overrides the dedup window.
+    expect(slack.posted.length).toBe(2);
+
+    spy.mockRestore();
   });
 });

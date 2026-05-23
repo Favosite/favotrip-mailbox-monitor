@@ -116,6 +116,30 @@ const ConfigSchema = z.object({
    * direct inspection).
    */
   DAILY_ROLLUP_CRON: z.string().default('0 8 * * *'),
+
+  /**
+   * Owner-post cooldown state file. Tracks the timestamp of the last
+   * top-level #team mailbox-action post per owner UID so the runner
+   * can collapse multiple urgent batches within the cooldown window
+   * into one post. Dennis 2026-05-23 third iteration.
+   */
+  OWNER_POST_COOLDOWN_FILE: z
+    .string()
+    .default('/var/lib/mailbox-monitor/owner-post-cooldown.json'),
+
+  /**
+   * Cooldown in minutes between top-level #team mailbox-action posts
+   * for the same owner. P0/P1 keyword hits bypass the cooldown
+   * (customer impact > dedup noise). Default 60 minutes per Dennis
+   * 2026-05-23 spec.
+   */
+  MAILBOX_OWNER_COOLDOWN_MIN: z
+    .string()
+    .default('60')
+    .transform((v) => {
+      const n = Number(v);
+      return Number.isFinite(n) && n > 0 ? n : 60;
+    }),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
