@@ -122,7 +122,16 @@ export class DigestRunner {
             ? Infinity
             : (now.getTime() - lastZeroPostAt.getTime()) / 60000;
         if (sinceLastZero >= intervalMin) {
-          await this.deps.slack.post(buildDigestMessage([], now));
+          const zeroText = buildDigestMessage([], now);
+          if (zeroText) {
+            await this.deps.slack.post(zeroText);
+          } else {
+            // 2026-05-23: buildDigestMessage([]) now returns "" by
+            // policy. We honour ZERO_MAIL_POST_INTERVAL_MIN's intent
+            // (mark the cycle so we don't reconsider next tick) but
+            // never send the empty body to #team.
+            this.log('info', 'zero.heartbeat.suppressed');
+          }
           nextZeroPostAt = now;
         } else {
           this.log('info', 'zero.skip.rate.limited', { minSince: Math.round(sinceLastZero) });
@@ -171,7 +180,16 @@ export class DigestRunner {
           detail: d.decision.detail,
         })),
       });
-      await this.deps.slack.post(buildDigestMessage(processed, now));
+      const digestText = buildDigestMessage(processed, now);
+      if (digestText) {
+        await this.deps.slack.post(digestText);
+      } else {
+        // Defense-in-depth (Dennis 2026-05-23): buildDigestMessage
+        // returns "" when there's nothing actionable to say. Never
+        // post an empty body to #team. Detail stays in the structured
+        // log emitted just above.
+        this.log('info', 'digest.skipped.empty-render');
+      }
     }
 
     // Tier-2 #6: dispatch HIGH-priority mails to the centralised

@@ -82,13 +82,25 @@ export class DailyRollupService {
   }
 }
 
-const REASON_DISPLAY: Record<SuppressReason, string> = {
-  low_priority: 'routine LOW (booking_question / general_info / spam)',
-  repeated_mailer_only: 'repeated_mailer noise (no content urgency)',
-  needs_human_review_nonurgent: 'needs_human_review without urgent keyword',
-  other_routine: 'other routine',
-};
-
+/**
+ * Build the #team daily-rollup message for yesterday's suppressed-mail
+ * counts.
+ *
+ * Dennis 2026-05-23 rollup-formatting spec:
+ *   - If only routine mails were suppressed and no human action is
+ *     needed → AT MOST one line: `📫 Mailbox rollup …: N routine mails
+ *     onderdrukt. Geen actie nodig.`
+ *   - No bucket breakdown top-level in #team.
+ *   - No reason breakdown top-level in #team.
+ *   - No "which signals still post immediately" explanation.
+ *   - Owner-actionable batches are handled by digest.service.buildDigestMessage,
+ *     not by this rollup.
+ *
+ * The bucket + reason breakdown still lives in SuppressedCountsStore
+ * (state file) and in the structured `daily-rollup.detailed` log line
+ * the runner emits. Operators who want detail can grep the log or open
+ * `audit/suppressed-counts.json`. No top-level #team rendering of it.
+ */
 export function buildDailyRollupMessage(
   day: Date,
   entry:
@@ -99,37 +111,58 @@ export function buildDailyRollupMessage(
       }
     | undefined,
 ): string {
+  // Suppress reference to BUCKET_DISPLAY / REASON_DISPLAY at the
+  // top-level renderer — they're kept for the structured-log path only.
+  void BUCKET_DISPLAY;
   const dayLabel = day.toISOString().slice(0, 10);
-  if (!entry || entry.totalSuppressed === 0) {
-    return `:mailbox: Mailbox routine rollup ${dayLabel}: 0 suppressed (no routine traffic).`;
+  const total = entry?.totalSuppressed ?? 0;
+  if (total === 0) {
+    return `:mailbox: Mailbox rollup ${dayLabel}: 0 routine mails onderdrukt. Geen actie nodig.`;
   }
-  const lines = [
-    `:mailbox: *Mailbox routine rollup ${dayLabel}*`,
-    `${entry.totalSuppressed} routine mail${entry.totalSuppressed === 1 ? '' : 's'} suppressed from immediate #team posts.`,
-    '',
-    '*Bucket breakdown:*',
-  ];
-  const sortedBuckets = Object.entries(entry.byBucket).sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0));
-  for (const [bucket, count] of sortedBuckets) {
-    lines.push(`• ${count} ${BUCKET_DISPLAY[bucket as Bucket] ?? bucket}`);
-  }
-  // Reason breakdown — only render if byReason is populated. Legacy
-  // entries from PR #10 era don't have byReason, in which case this
-  // section is skipped (operators see only the bucket breakdown they
-  // had before).
-  const reasonEntries = entry.byReason ? Object.entries(entry.byReason) : [];
-  if (reasonEntries.length > 0) {
-    lines.push('');
-    lines.push('*Reason breakdown:*');
-    const sortedReasons = reasonEntries.sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0));
-    for (const [reason, count] of sortedReasons) {
-      const label = REASON_DISPLAY[reason as SuppressReason] ?? reason;
-      lines.push(`• ${count} ${label}`);
-    }
-  }
-  lines.push('');
-  lines.push(
-    '_Time-sensitive buckets (cancellation/refund/partner) and content-urgent signals (legal/chargeback/sob-story, P0/P1 keyword hits, manual-only PII redactions, and URGENT_KEYWORDS like "betaalmodule" / "voucher werkt niet" / "geld terug") still posted immediately at the time they arrived._',
-  );
-  return lines.join('\n');
+  const mailWord = total === 1 ? 'mail' : 'mails';
+  return `:mailbox: Mailbox rollup ${dayLabel}: ${total} routine ${mailWord} onderdrukt. Geen actie nodig.`;
 }
+
+/**
+ * Structured-log payload for the bucket + reason breakdown. Emitted
+ * alongside the #team post (by the runner) so operators can grep logs
+ * or pipe the JSON to #claude-agent-trace later if needed.
+ *
+ * Returns null when there's nothing to log (zero suppressed).
+ */
+export function buildDailyRollupDetail(
+  day: Date,
+  entry:
+    | {
+        totalSuppressed: number;
+        byBucket: Partial<Record<Bucket, number>>;
+        byReason?: Partial<Record<SuppressReason, number>>;
+      }
+    | undefined,
+): Record<string, unknown> | null {
+  if (!entry || entry.totalSuppressed === 0) return null;
+  const dayLabel = day.toISOString().slice(0, 10);
+  const byBucketRendered: Record<string, number> = {};
+  for (const [bucket, count] of Object.entries(entry.byBucket)) {
+    byBucketRendered[BUCKET_DISPLAY[bucket as Bucket] ?? bucket] = count ?? 0;
+  }
+  const byReasonRendered: Record<string, number> = {};
+  for (const [reason, count] of Object.entries(entry.byReason ?? {})) {
+    byReasonRendered[reason] = count ?? 0;
+  }
+  return {
+    day: dayLabel,
+    totalSuppressed: entry.totalSuppressed,
+    byBucket: byBucketRendered,
+    byReason: byReasonRendered,
+  };
+}
+
+// Retained for backwards compatibility with the detail-logger; not used
+// by the new buildDailyRollupMessage.
+export const _REASON_DISPLAY: Record<SuppressReason, string> = {
+  low_priority: 'routine LOW (booking_question / general_info / spam)',
+  repeated_mailer_only: 'repeated_mailer noise (no content urgency)',
+  needs_human_review_nonurgent: 'needs_human_review without urgent keyword',
+  other_routine: 'other routine',
+};
