@@ -90,11 +90,14 @@ describe('DigestRunner', () => {
     spy.mockRestore();
   });
 
-  it('rate-limits zero-mail post: first run posts, second within window does not', async () => {
+  it('zero-mail heartbeat is fully suppressed (2026-05-23 spec): never posts to #team', async () => {
+    // Old behavior: ZERO_MAIL_POST_INTERVAL_MIN=60 → post "0 mails" once
+    // per hour. New behavior: buildDigestMessage([]) returns "" and the
+    // runner skips the post entirely. The rate-limit timestamp still
+    // advances so we don't re-evaluate every tick.
     const cfg = mkCfg({ ZERO_MAIL_POST_INTERVAL_MIN: 60 });
     const slack = new CapturePoster();
 
-    // Stub the IMAP fetch by mocking ImapFetchService prototype.
     const { ImapFetchService } = await import('./imap/imap.service.js');
     const spy = vi
       .spyOn(ImapFetchService.prototype, 'fetchSince')
@@ -107,18 +110,10 @@ describe('DigestRunner', () => {
       log: () => {},
     });
 
-    const t1 = new Date('2026-05-08T10:00:00Z');
-    await runner.runOnce(t1);
-    expect(slack.posted.length).toBe(1);
-    expect(slack.posted[0]).toContain('0 mails');
-
-    const t2 = new Date(t1.getTime() + 30 * 60_000);
-    await runner.runOnce(t2);
-    expect(slack.posted.length).toBe(1);
-
-    const t3 = new Date(t1.getTime() + 61 * 60_000);
-    await runner.runOnce(t3);
-    expect(slack.posted.length).toBe(2);
+    await runner.runOnce(new Date('2026-05-08T10:00:00Z'));
+    await runner.runOnce(new Date('2026-05-08T10:30:00Z'));
+    await runner.runOnce(new Date('2026-05-08T11:01:00Z'));
+    expect(slack.posted.length).toBe(0);
 
     spy.mockRestore();
   });
@@ -150,8 +145,8 @@ describe('DigestRunner', () => {
 
     await runner.runOnce(new Date('2026-05-08T10:01:00Z'));
     expect(slack.posted.length).toBe(1);
-    expect(slack.posted[0]).toContain('Klantenservice digest');
-    expect(slack.posted[0]).toContain('cancellation_request');
+    expect(slack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel \d+ klantmail/);
+    expect(slack.posted[0]).not.toContain('cancellation_request'); // doctrine: no bucket leak
     spy.mockRestore();
   });
 
@@ -214,8 +209,8 @@ describe('DigestRunner', () => {
 
     await runner.runOnce(new Date('2026-05-22T10:11:00Z'));
     expect(slack.posted.length).toBe(1);
-    expect(slack.posted[0]).toContain('Klantenservice digest');
-    expect(slack.posted[0]).toMatch(/HIGH|legal_threat/);
+    expect(slack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel \d+ klantmail/);
+    expect(slack.posted[0]).toContain('HIGH');
     spy.mockRestore();
   });
 
@@ -248,11 +243,14 @@ describe('DigestRunner', () => {
     expect(alertsSlack.posted.length).toBe(1);
     expect(alertsSlack.posted[0]).toMatch(/P0|P1/);
     expect(teamSlack.posted.length).toBe(1);
-    expect(teamSlack.posted[0]).toContain('Klantenservice digest');
+    expect(teamSlack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel \d+ klantmail/);
     spy.mockRestore();
   });
 
-  it('zero-mail digest rate-limit still applies (existing policy unchanged)', async () => {
+  it('zero-mail heartbeat is fully suppressed even when ZERO_MAIL_POST_INTERVAL_MIN is set', async () => {
+    // 2026-05-23: buildDigestMessage([]) returns "" → runner skips the
+    // post regardless of the rate-limit interval. The interval timestamp
+    // still advances internally but no Slack post fires.
     const cfg = mkCfg({ ZERO_MAIL_POST_INTERVAL_MIN: 60 });
     const slack = new CapturePoster();
 
@@ -268,13 +266,9 @@ describe('DigestRunner', () => {
       log: () => {},
     });
 
-    const t1 = new Date('2026-05-22T10:00:00Z');
-    await runner.runOnce(t1);
-    expect(slack.posted.length).toBe(1);
-
-    const t2 = new Date(t1.getTime() + 30 * 60_000);
-    await runner.runOnce(t2);
-    expect(slack.posted.length).toBe(1);
+    await runner.runOnce(new Date('2026-05-22T10:00:00Z'));
+    await runner.runOnce(new Date('2026-05-22T11:01:00Z'));
+    expect(slack.posted.length).toBe(0);
 
     spy.mockRestore();
   });
@@ -390,10 +384,10 @@ describe('DigestRunner', () => {
         date: new Date('2026-05-22T15:00:00Z') },
     ], slack);
     expect(slack.posted.length).toBe(1);
-    expect(slack.posted[0]).toContain('Klantenservice digest');
+    expect(slack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel \d+ klantmail/);
   });
 
-  it('Scenario 7: cancellation_request → directly posted', async () => {
+  it('Scenario 7: cancellation_request → directly posted (compliant owner-tagged message)', async () => {
     const cfg = mkCfg();
     const slack = new CapturePoster();
     await runWithImap(cfg, [
@@ -403,7 +397,8 @@ describe('DigestRunner', () => {
         date: new Date('2026-05-22T15:00:00Z') },
     ], slack);
     expect(slack.posted.length).toBe(1);
-    expect(slack.posted[0]).toContain('cancellation_request');
+    expect(slack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel \d+ klantmail/);
+    expect(slack.posted[0]).not.toContain('cancellation_request'); // doctrine: no bucket leak
   });
 
   it('Scenario 10: legal_threat flag → directly posted', async () => {

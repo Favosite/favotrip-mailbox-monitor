@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ProcessedMail } from '../types.js';
 import { SuppressedCountsStore } from '../state/suppressed-counts.service.js';
 import type { SlackPoster } from './slack.service.js';
-import { DailyRollupService, buildDailyRollupMessage } from './daily-rollup.service.js';
+import { DailyRollupService, buildDailyRollupDetail, buildDailyRollupMessage } from './daily-rollup.service.js';
 
 let dir: string;
 let filePath: string;
@@ -44,39 +44,53 @@ function mkMail(overrides: Partial<ProcessedMail> = {}): ProcessedMail {
   };
 }
 
-describe('buildDailyRollupMessage', () => {
-  it('renders zero-day message', () => {
+describe('buildDailyRollupMessage — 2026-05-23 rollup-formatting spec (Dennis)', () => {
+  it('zero-day message is one line and says "Geen actie nodig"', () => {
     const text = buildDailyRollupMessage(new Date('2026-05-21T00:00:00Z'), undefined);
+    expect(text.split('\n').length).toBe(1);
     expect(text).toContain('2026-05-21');
-    expect(text).toContain('0 suppressed');
+    expect(text).toContain('0 routine mails onderdrukt');
+    expect(text).toContain('Geen actie nodig');
   });
 
-  it('renders bucket breakdown sorted by count desc', () => {
+  it('non-zero rollup is also one line and says "Geen actie nodig"', () => {
     const text = buildDailyRollupMessage(new Date('2026-05-21T00:00:00Z'), {
       totalSuppressed: 7,
       byBucket: { booking_question: 5, general_info: 2 },
     });
-    expect(text).toContain('7 routine mails suppressed');
-    const idxBQ = text.indexOf('booking_question');
-    const idxGI = text.indexOf('general_info');
-    expect(idxBQ).toBeGreaterThan(0);
-    expect(idxGI).toBeGreaterThan(idxBQ);
+    expect(text.split('\n').length).toBe(1);
+    expect(text).toContain('2026-05-21');
+    expect(text).toContain('7 routine mails onderdrukt');
+    expect(text).toContain('Geen actie nodig');
   });
 
-  it('mentions that time-sensitive buckets posted at arrival time', () => {
+  it('singular form: 1 mail (not "1 mails")', () => {
     const text = buildDailyRollupMessage(new Date('2026-05-21T00:00:00Z'), {
-      totalSuppressed: 3,
-      byBucket: { booking_question: 3 },
+      totalSuppressed: 1,
+      byBucket: { booking_question: 1 },
     });
-    // Per Dennis 2026-05-22 second iteration: needs_human_review is no
-    // longer an always-immediate bucket. The new footer lists the 3
-    // remaining time-sensitive buckets + mentions content-urgent signals
-    // (flags / keyword hits / URGENT_KEYWORDS) that override suppression.
-    expect(text).toMatch(/cancellation\/refund\/partner.*immediately/);
-    expect(text).toMatch(/URGENT_KEYWORDS|urgent/);
+    expect(text).toContain('1 routine mail onderdrukt');
+    expect(text).not.toContain('1 routine mails');
   });
 
-  it('renders byReason breakdown when populated (NEW)', () => {
+  it('NO bucket breakdown leaks top-level in #team payload', () => {
+    const text = buildDailyRollupMessage(new Date('2026-05-21T00:00:00Z'), {
+      totalSuppressed: 7,
+      byBucket: { booking_question: 5, general_info: 2 },
+    });
+    for (const banned of [
+      'booking_question',
+      'general_info',
+      'Bucket breakdown',
+      'cancellation_request',
+      'refund_request',
+      'needs_human_review',
+    ]) {
+      expect(text).not.toContain(banned);
+    }
+  });
+
+  it('NO reason breakdown leaks top-level in #team payload', () => {
     const text = buildDailyRollupMessage(new Date('2026-05-21T00:00:00Z'), {
       totalSuppressed: 5,
       byBucket: { booking_question: 4, needs_human_review: 1 },
@@ -86,20 +100,51 @@ describe('buildDailyRollupMessage', () => {
         needs_human_review_nonurgent: 1,
       },
     });
-    expect(text).toMatch(/Reason breakdown/);
-    expect(text).toMatch(/3 routine LOW/);
-    expect(text).toMatch(/repeated_mailer noise/);
-    expect(text).toMatch(/needs_human_review without urgent/);
+    for (const banned of [
+      'Reason breakdown',
+      'routine LOW',
+      'repeated_mailer',
+      'needs_human_review',
+      'low_priority',
+    ]) {
+      expect(text).not.toContain(banned);
+    }
   });
 
-  it('omits Reason breakdown for legacy entries without byReason (backward compat)', () => {
+  it('NO "which signals still post immediately" footer in #team payload', () => {
     const text = buildDailyRollupMessage(new Date('2026-05-21T00:00:00Z'), {
       totalSuppressed: 3,
       byBucket: { booking_question: 3 },
-      // byReason absent
     });
-    expect(text).not.toMatch(/Reason breakdown/);
-    expect(text).toMatch(/Bucket breakdown/);
+    expect(text).not.toMatch(/cancellation\/refund\/partner/);
+    expect(text).not.toMatch(/URGENT_KEYWORDS|urgent/i);
+    expect(text).not.toMatch(/Time-sensitive/i);
+    expect(text).not.toMatch(/immediate/i);
+  });
+});
+
+describe('buildDailyRollupDetail — structured-log payload (NOT #team)', () => {
+  it('returns null for zero-suppressed days', () => {
+    expect(buildDailyRollupDetail(new Date('2026-05-21T00:00:00Z'), undefined)).toBeNull();
+    expect(
+      buildDailyRollupDetail(new Date('2026-05-21T00:00:00Z'), {
+        totalSuppressed: 0,
+        byBucket: {},
+      }),
+    ).toBeNull();
+  });
+
+  it('renders full bucket + reason breakdown for the structured log', () => {
+    const d = buildDailyRollupDetail(new Date('2026-05-21T00:00:00Z'), {
+      totalSuppressed: 5,
+      byBucket: { booking_question: 4, needs_human_review: 1 },
+      byReason: { low_priority: 4, needs_human_review_nonurgent: 1 },
+    });
+    expect(d).not.toBeNull();
+    expect(d!.day).toBe('2026-05-21');
+    expect(d!.totalSuppressed).toBe(5);
+    expect(d!.byBucket).toEqual({ booking_question: 4, needs_human_review: 1 });
+    expect(d!.byReason).toEqual({ low_priority: 4, needs_human_review_nonurgent: 1 });
   });
 });
 
@@ -113,7 +158,7 @@ describe('DailyRollupService', () => {
     expect(slack.posted.length).toBe(0);
   });
 
-  it('posts when yesterday had suppressed mails', async () => {
+  it('posts when yesterday had suppressed mails (1-line, Geen actie nodig)', async () => {
     const store = new SuppressedCountsStore(filePath);
     await store.load();
     store.add([mkMail(), mkMail({ uid: 2 })], new Date('2026-05-21T10:00:00Z'));
@@ -126,8 +171,15 @@ describe('DailyRollupService', () => {
     });
     await svc.runOnce(new Date('2026-05-22T08:00:00Z'));
     expect(slack.posted.length).toBe(1);
-    expect(slack.posted[0]).toContain('2026-05-21');
-    expect(slack.posted[0]).toContain('2 routine');
+    const text = slack.posted[0];
+    expect(text.split('\n').length).toBe(1);
+    expect(text).toContain('2026-05-21');
+    expect(text).toContain('2 routine mails onderdrukt');
+    expect(text).toContain('Geen actie nodig');
+    // No bucket / reason / footer leakage:
+    expect(text).not.toContain('booking_question');
+    expect(text).not.toMatch(/Reason breakdown/);
+    expect(text).not.toMatch(/cancellation\/refund/);
   });
 
   it('reports yesterday, not today', async () => {
@@ -145,14 +197,15 @@ describe('DailyRollupService', () => {
     expect(slack.posted.length).toBe(0);
   });
 
-  it('skipPostOnZero=false posts zero-day notice', async () => {
+  it('skipPostOnZero=false posts zero-day notice in the new 1-line shape', async () => {
     const store = new SuppressedCountsStore(filePath);
     await store.load();
     const slack = new CapturePoster();
     const svc = new DailyRollupService({ store, slack, skipPostOnZero: false });
     await svc.runOnce(new Date('2026-05-22T08:00:00Z'));
     expect(slack.posted.length).toBe(1);
-    expect(slack.posted[0]).toContain('0 suppressed');
+    expect(slack.posted[0]).toContain('0 routine mails onderdrukt');
+    expect(slack.posted[0]).toContain('Geen actie nodig');
   });
 
   it('swallows slack post errors (does not crash daily cron)', async () => {
