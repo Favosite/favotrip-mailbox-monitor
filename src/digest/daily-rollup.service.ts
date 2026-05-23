@@ -163,6 +163,7 @@ export function buildDailyRollupDetail(
 export const _REASON_DISPLAY: Record<SuppressReason, string> = {
   low_priority: 'routine LOW (booking_question / general_info / spam)',
   repeated_mailer_only: 'repeated_mailer noise (no content urgency)',
+  manual_only_nonurgent: 'manual-only without urgent keyword (PII redacted)',
   needs_human_review_nonurgent: 'needs_human_review without urgent keyword',
   other_routine: 'other routine',
 };

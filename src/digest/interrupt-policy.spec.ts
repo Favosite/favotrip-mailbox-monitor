@@ -82,10 +82,24 @@ describe('classifyInterrupt — interrupt-worthy cases', () => {
     expect(d.detail).toContain('P0');
   });
 
-  it('manualOnly interrupts (PII redacted IBAN/medical)', () => {
+  it('manualOnly WITHOUT urgent co-signal does NOT interrupt (Dennis 2026-05-23 third iteration)', () => {
     const d = classifyInterrupt(mkMail({ manualOnly: true }));
+    expect(d.interrupt).toBe(false);
+    expect(d.reason).toBe('manual_only_nonurgent');
+  });
+
+  it('manualOnly WITH urgent keyword DOES interrupt (urgent kw wins, not manualOnly)', () => {
+    const d = classifyInterrupt(
+      mkMail({ manualOnly: true, maskedBody: 'mijn voucher werkt niet' }),
+    );
     expect(d.interrupt).toBe(true);
-    expect(d.detail).toBe('manualOnly');
+    expect(d.detail).toContain('urgent-kw=voucher werkt niet');
+  });
+
+  it('manualOnly WITH refund_request bucket DOES interrupt (bucket wins)', () => {
+    const d = classifyInterrupt(mkMail({ manualOnly: true, bucket: 'refund_request' }));
+    expect(d.interrupt).toBe(true);
+    expect(d.detail).toBe('bucket=refund_request');
   });
 
   it('urgent keyword in subject interrupts', () => {
@@ -219,6 +233,17 @@ describe('classifyForSuppression', () => {
       mkMail({ uid: 2, flags: ['legal_threat'], priority: 'HIGH' }),
     ];
     expect(classifyForSuppression(mails)).toEqual([]);
+  });
+
+  it('manual_only_nonurgent surfaces in classifyForSuppression output (2026-05-23)', () => {
+    const mails = [
+      mkMail({ uid: 1, manualOnly: true }), // manual_only_nonurgent
+      mkMail({ uid: 2, manualOnly: true, bucket: 'refund_request' }), // INTERRUPT
+      mkMail({ uid: 3, manualOnly: true, bucket: 'needs_human_review' }), // manual_only_nonurgent
+    ];
+    const result = classifyForSuppression(mails);
+    expect(result).toHaveLength(2);
+    expect(result.every((c) => c.reason === 'manual_only_nonurgent')).toBe(true);
   });
 });
 

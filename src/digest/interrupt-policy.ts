@@ -1,47 +1,42 @@
 import type { Bucket, ManipulationFlag, ProcessedMail } from '../types.js';
 
 /**
- * Interrupt-policy gate — supersedes the simpler isAllLowPriority gate for
+ * Interrupt-policy gate, supersedes the simpler isAllLowPriority gate for
  * the #team digest poster.
  *
- * Background — Dennis 2026-05-22 second-iteration feedback:
- *   PR #10 (LOW-priority suppression) reduced #team spam, but operators
- *   still saw recurring HIGH posts driven by `repeated_mailer` alone, and
- *   `needs_human_review` mails posting immediately without any urgent
- *   signal. Observed pattern:
- *     - 14:00 booking_question + HIGH booking_question (repeated_mailer)
- *     - 15:10 needs_human_review
- *     - 15:25 needs_human_review + HIGH needs_human_review (repeated_mailer)
- *     - 15:30 HIGH needs_human_review (repeated_mailer)
- *     - 15:40 HIGH needs_human_review (repeated_mailer)
+ * Dennis 2026-05-23 third iteration (manual-only / needs_human_review spam):
+ *   Even after PR #11/#13, #team still received single-mail posts like
+ *   "ACTION: behandel 1 klantmail handmatig" at 20:30 + 21:15 driven by
+ *   `manualOnly=true` without any real urgency. Manual-only is a
+ *   routing signal (PII-redacted, human-eyes required) but it is NOT
+ *   inherently urgent: a customer asking for help configuring a deal
+ *   gets manualOnly=true with zero time-pressure. Posting one of those
+ *   immediately top-level in #team is noise, not signal.
  *
- * Root cause: `pipeline.ts` adds `repeated_mailer` to the flags array when
- * a sender has been seen >=3 times in 7 days, and ANY flag escalates
- * priority to HIGH. Repeated-mailer is volume-only — it does not imply
- * content urgency. And `needs_human_review` was always treated as
- * "immediate" because the classifier was uncertain — that turned out to
- * generate too many false interrupts.
- *
- * NEW POLICY: a mail is interrupt-worthy only if it shows REAL urgency.
+ *   NEW: manualOnly is removed from interrupt-triggers. It still
+ *   classifies the mail as `manual_only_nonurgent` for the rollup so
+ *   nothing is lost; it just doesn't escalate to #team unless something
+ *   else (urgent bucket, urgent keyword, P0/P1, urgent flag) co-occurs.
  *
  * Interrupt-worthy when ANY of:
- *   - bucket ∈ {cancellation_request, refund_request, partner_issue}
+ *   - bucket in {cancellation_request, refund_request, partner_issue}
  *     (always time-sensitive / money-impact)
  *   - any flag in INTERRUPT_FLAGS (legal_threat, chargeback,
- *     sob_story_money) — content-urgent, NOT including repeated_mailer
+ *     sob_story_money), content-urgent, NOT including repeated_mailer
  *   - keywordHit present (P0/P1 from the keyword classifier)
- *   - manualOnly true (PII-redacted IBAN/medical → serious)
  *   - URGENT_KEYWORDS substring match in masked subject or body
+ *     (covers "betaalmodule", "voucher werkt niet", "geld terug", etc.)
  *
  * Suppressed (to the 09:00 rollup) when ALL of the above are false. The
  * suppression reason is captured per-mail for the rollup so operators
  * can see WHY mail was suppressed, not just that it was.
  *
  * Suppress-reason codes (mutually exclusive, evaluated in order):
- *   repeated_mailer_only       — flags == ['repeated_mailer'] and nothing else
- *   needs_human_review_nonurgent — bucket=='needs_human_review' without urgent kw
- *   low_priority               — original LOW-bucket NORMAL-priority case
- *   other_routine              — fallback (rare; covers edge cases)
+ *   repeated_mailer_only         flags == ['repeated_mailer'] and nothing else
+ *   manual_only_nonurgent        manualOnly=true without urgent co-signal
+ *   needs_human_review_nonurgent bucket=='needs_human_review' without urgent kw
+ *   low_priority                 original LOW-bucket NORMAL-priority case
+ *   other_routine                fallback (rare; covers edge cases)
  *
  * The interrupt-policy is on top of the existing #alerts keyword pipeline
  * and queue-task dispatcher, both of which remain unaffected. Only the
@@ -91,6 +86,7 @@ export const INTERRUPT_FLAGS: ReadonlySet<ManipulationFlag> = new Set<Manipulati
 export type SuppressReason =
   | 'low_priority'
   | 'repeated_mailer_only'
+  | 'manual_only_nonurgent'
   | 'needs_human_review_nonurgent'
   | 'other_routine';
 
@@ -140,12 +136,10 @@ export function classifyInterrupt(m: ProcessedMail): InterruptDecision {
     return { interrupt: true, reason: 'interrupt', detail: `keywordHit=${m.keywordHit.severity}` };
   }
 
-  // 4. Manual-only (IBAN/medical PII-redacted) always demands human eyes.
-  if (m.manualOnly) {
-    return { interrupt: true, reason: 'interrupt', detail: 'manualOnly' };
-  }
-
-  // 5. URGENT_KEYWORDS substring in subject or body interrupts.
+  // 4. URGENT_KEYWORDS substring in subject or body interrupts.
+  //    Note: manualOnly removed from interrupt-triggers per Dennis
+  //    2026-05-23 spec. It now classifies as `manual_only_nonurgent`
+  //    in the suppression block below.
   const subjectHit = findUrgentKeyword(m.maskedSubject);
   const bodyHit = subjectHit ? null : findUrgentKeyword(m.maskedBody);
   if (subjectHit || bodyHit) {
@@ -158,12 +152,19 @@ export function classifyInterrupt(m: ProcessedMail): InterruptDecision {
 
   // Not interrupt-worthy. Classify the suppression reason for the rollup.
 
-  // Reason order matters — repeated_mailer_only is more specific than the
+  // Reason order matters. repeated_mailer_only is more specific than the
   // bucket-based reasons and should fire first when it's the only flag.
   const onlyRepeatedMailer =
     m.flags.length > 0 && m.flags.every((f) => f === 'repeated_mailer');
   if (onlyRepeatedMailer) {
     return { interrupt: false, reason: 'repeated_mailer_only' };
+  }
+
+  // Manual-only without urgent co-signal. Per Dennis 2026-05-23 this
+  // is the most common false-interrupt source so it gets a dedicated
+  // reason ahead of needs_human_review_nonurgent.
+  if (m.manualOnly) {
+    return { interrupt: false, reason: 'manual_only_nonurgent' };
   }
 
   if (m.bucket === 'needs_human_review') {

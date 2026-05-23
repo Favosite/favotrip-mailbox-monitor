@@ -1,4 +1,5 @@
 import type { Bucket, DigestStats, ProcessedMail } from '../types.js';
+import { classifyInterrupt } from './interrupt-policy.js';
 
 /**
  * Slack user-ID for Jeanne (klantenservice lead). Used as the owner-tag
@@ -6,21 +7,6 @@ import type { Bucket, DigestStats, ProcessedMail } from '../types.js';
  * `<@U07TM7DKMUF> ACTION: …`. Mirrors server-claude-worker constants.
  */
 export const JEANNE_SLACK_UID = 'U07TM7DKMUF';
-
-// Kept for legacy consumers of BUCKET_DISPLAY via re-export; the new
-// formatter does NOT render bucket labels top-level in #team (Dennis
-// 2026-05-23 spec). Re-import from daily-rollup.service.ts if you need
-// it for structured-log payloads.
-const _BUCKET_DISPLAY_LEGACY: Record<Bucket, string> = {
-  booking_question: 'booking_question',
-  cancellation_request: 'cancellation_request',
-  refund_request: 'refund_request',
-  partner_issue: 'partner_issue',
-  general_info: 'general_info',
-  spam_out_of_scope: 'spam_out_of_scope',
-  needs_human_review: 'needs_human_review',
-};
-void _BUCKET_DISPLAY_LEGACY;
 
 export function buildStats(mails: ProcessedMail[]): DigestStats {
   const byBucket: Partial<Record<Bucket, number>> = {};
@@ -35,49 +21,105 @@ export function buildStats(mails: ProcessedMail[]): DigestStats {
 }
 
 /**
+ * Normalise an interrupt-decision detail into a short Dutch reason
+ * fragment suitable for a single ACTION line. Reasons must be
+ * customer-recognisable and short. Examples:
+ *   bucket=cancellation_request  -> "annulering"
+ *   bucket=refund_request        -> "refund"
+ *   bucket=partner_issue         -> "partner-issue"
+ *   flags=legal_threat           -> "juridisch"
+ *   flags=chargeback             -> "chargeback"
+ *   flags=sob_story_money        -> "financieel"
+ *   keywordHit=P0|P1             -> "P0" / "P1"
+ *   urgent-kw=<word>             -> "<word>"
+ */
+function reasonFragmentFor(detail: string | undefined): string {
+  if (!detail) return 'urgent';
+  if (detail.startsWith('bucket=')) {
+    const bucket = detail.slice('bucket='.length);
+    switch (bucket) {
+      case 'cancellation_request':
+        return 'annulering';
+      case 'refund_request':
+        return 'refund';
+      case 'partner_issue':
+        return 'partner-issue';
+      default:
+        return bucket;
+    }
+  }
+  if (detail.startsWith('flags=')) {
+    const first = detail.slice('flags='.length).split(',')[0];
+    switch (first) {
+      case 'legal_threat':
+        return 'juridisch';
+      case 'chargeback':
+        return 'chargeback';
+      case 'sob_story_money':
+        return 'financieel';
+      default:
+        return first;
+    }
+  }
+  if (detail.startsWith('keywordHit=')) {
+    return detail.slice('keywordHit='.length);
+  }
+  if (detail.startsWith('urgent-kw=')) {
+    return detail.slice('urgent-kw='.length);
+  }
+  return 'urgent';
+}
+
+/**
  * Build the concise #team message for an interrupt-worthy batch.
  *
- * Dennis 2026-05-23 rollup-formatting spec: #team must NOT receive
- * bucket-counts breakdowns, per-mail listings, or "Klantenservice
- * digest" header rollups. The only #team posts allowed are owner-tagged
- * ACTION lines with a single follow-up reason line. Detail (per-mail
- * bucket / flags / confidence) lives in the structured log + state
- * file; this formatter never re-renders it for #team.
+ * Dennis 2026-05-23 third iteration: NO bucket breakdowns, NO
+ * "(N HIGH, M manual-only)" signal-parts, NO per-mail listings. A
+ * #team mailbox post is ONE owner-tagged ACTION line that names the
+ * urgency-reason(s) briefly so Jeanne can decide what to read first.
  *
- * The runner is responsible for only calling this when at least one
- * mail in the batch is interrupt-worthy (see interrupt-policy.ts).
- * If the runner calls with an empty array, the function returns an
- * empty string and the caller MUST suppress the post — no zero-mail
- * heartbeat. Dropping that line was Dennis's explicit ask.
+ * Bundling: multiple urgent mails get one post with comma-separated
+ * unique reasons (max 3, then "+N meer"). Non-urgent mails in the
+ * batch are silently excluded; their reasons land in the suppressed-
+ * counts state for the rollup.
+ *
+ * If no mail in the batch is interrupt-worthy, returns "" and the
+ * caller MUST NOT post. Defence-in-depth alongside the runner's
+ * shouldSuppressBatch gate (see runner.ts).
  */
 export function buildDigestMessage(mails: ProcessedMail[], _now: Date = new Date()): string {
   if (mails.length === 0) {
-    // Caller MUST treat empty string as "do not post". Dropping the
-    // zero-mail heartbeat — kept only as a structured log line by the
-    // runner — is part of the 2026-05-23 spec ("Geen actie nodig").
     return '';
   }
 
-  const stats = buildStats(mails);
-
-  // Single concise summary line so Jeanne sees the count + the urgent
-  // signal mix without the full per-mail dump. Order in the parenthesis
-  // matches operator-priority: HIGH first, then manual-only, then total.
-  const signalParts: string[] = [];
-  if (stats.highPriorityCount > 0) {
-    signalParts.push(`${stats.highPriorityCount} HIGH`);
+  // Only consider interrupt-worthy mails. Non-urgent mails in a
+  // mixed batch must not influence the urgency line.
+  const urgent: { mail: ProcessedMail; reason: string }[] = [];
+  for (const m of mails) {
+    const d = classifyInterrupt(m);
+    if (d.interrupt) {
+      urgent.push({ mail: m, reason: reasonFragmentFor(d.detail) });
+    }
   }
-  if (stats.manualOnlyCount > 0) {
-    signalParts.push(`${stats.manualOnlyCount} manual-only`);
+
+  if (urgent.length === 0) {
+    return '';
   }
-  const signal = signalParts.length > 0 ? ` (${signalParts.join(', ')})` : '';
 
-  const mailWord = stats.total === 1 ? 'klantmail' : 'klantmails';
-  const verb = stats.total === 1 ? 'wacht' : 'wachten';
+  // Dedup reasons, preserve first-seen order, cap at 3, append "+N meer"
+  // if more distinct reasons exist.
+  const seen = new Set<string>();
+  const uniqueReasons: string[] = [];
+  for (const u of urgent) {
+    if (seen.has(u.reason)) continue;
+    seen.add(u.reason);
+    uniqueReasons.push(u.reason);
+  }
+  const shown = uniqueReasons.slice(0, 3);
+  const extra = uniqueReasons.length - shown.length;
+  const reasonStr = extra > 0 ? `${shown.join(', ')} +${extra} meer` : shown.join(', ');
 
-  return (
-    `<@${JEANNE_SLACK_UID}> ACTION: behandel ${stats.total} ${mailWord}` +
-    ` handmatig in klantenservice@favotrip.nl.\n` +
-    `${stats.total} ${mailWord}${signal} ${verb} op review.`
-  );
+  const count = urgent.length;
+  const mailWord = count === 1 ? 'urgente klantmail' : `${count} urgente klantmails`;
+  return `<@${JEANNE_SLACK_UID}> ACTION: behandel ${mailWord}: ${reasonStr}.`;
 }

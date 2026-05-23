@@ -7,3 +7,7 @@ coverage/
 .DS_Store
 .vscode/
 .idea/
+
+# macOS iCloud sync artifacts (`foo 2.ts`, `foo 3.ts`). Never tracked.
+* 2.*
+* 3.*
