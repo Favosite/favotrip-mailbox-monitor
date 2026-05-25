@@ -44,6 +44,9 @@ function mkCfg(overrides: Partial<Config> = {}): Config {
     DAILY_ROLLUP_CRON: '0 8 * * *',
     OWNER_POST_COOLDOWN_FILE: path.join(dir, 'owner-post-cooldown.json'),
     MAILBOX_OWNER_COOLDOWN_MIN: 60,
+    SLACK_DOCTRINE_STATE_FILE: path.join(dir, 'slack-doctrine-cooldown.json'),
+    SLACK_DOCTRINE_AUDIT_FILE: path.join(dir, 'slack-doctrine-suppressed.jsonl'),
+    SLACK_DOCTRINE_DISABLED: false,
     ...overrides,
   };
 }

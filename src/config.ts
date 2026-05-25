@@ -140,6 +140,44 @@ const ConfigSchema = z.object({
       const n = Number(v);
       return Number.isFinite(n) && n > 0 ? n : 60;
     }),
+
+  /**
+   * Slack-doctrine state files (Dennis 2026-05-25 PR-1 ecosystem
+   * doctrine rollout). The doctrine sits BELOW the owner-cooldown +
+   * keyword-dedupe layers and provides a final-stage gate:
+   *   - Gate A: top-level #team posts >6 lines auto-rewritten to a
+   *     1-line ACTION summary + full body routed to #alerts
+   *   - Gate B: 30-min content cooldown on normalized text hash;
+   *     stops near-identical posts that slipped past owner-cooldown
+   *     because the text was identical and recent
+   *   - R4: blocks `_Technical refs:` footer from top-level #team
+   *
+   * Enabled in production by wiring `DoctrineSlackPoster` in index.ts;
+   * disabled (no-op) in dev/test where DRY_RUN is set or where the
+   * BackendApiPoster path isn't taken.
+   *
+   * STATE_FILE: JSON map of {dedupKey → unix-seconds}. Pruned to 2×
+   * cooldown window on each evaluate(). Atomic write via tmp+rename.
+   *
+   * AUDIT_FILE: JSONL log; one row per suppressed/blocked post for
+   * operator-grep auditability. Append-only, best-effort write.
+   */
+  SLACK_DOCTRINE_STATE_FILE: z
+    .string()
+    .default('/var/lib/mailbox-monitor/slack-doctrine-cooldown.json'),
+  SLACK_DOCTRINE_AUDIT_FILE: z
+    .string()
+    .default('/var/lib/mailbox-monitor/slack-doctrine-suppressed.jsonl'),
+  /**
+   * Disable the doctrine adapter entirely. Use this as a runtime
+   * kill-switch if Gate A/B start mis-classifying. Default false —
+   * doctrine is the new normal. Set to 'true'/'1' to revert to the
+   * pre-doctrine BackendApiPoster behavior.
+   */
+  SLACK_DOCTRINE_DISABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true' || v === '1'),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

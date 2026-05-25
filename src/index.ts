@@ -1,7 +1,13 @@
 import cron from 'node-cron';
 import { loadConfig } from './config.js';
 import { DailyRollupService } from './digest/daily-rollup.service.js';
-import { BackendApiPoster, ConsoleLogPoster, SlackWebhookPoster, type SlackPoster } from './digest/slack.service.js';
+import {
+  BackendApiPoster,
+  ConsoleLogPoster,
+  DoctrineSlackPoster,
+  SlackWebhookPoster,
+  type SlackPoster,
+} from './digest/slack.service.js';
 import { AwsSecretsClient, EnvSecretsClient, type SecretsClient } from './secrets/secrets.service.js';
 import { DigestRunner } from './runner.js';
 import { SuppressedCountsStore } from './state/suppressed-counts.service.js';
@@ -42,6 +48,44 @@ async function main(): Promise<void> {
       process.env.SLACK_BACKEND_URL,
       process.env.SLACK_API_KEY,
       cfg.SLACK_CHANNEL_ALERTS,
+    );
+  }
+
+  // 2026-05-25 PR-1 ecosystem-doctrine wire-up: wrap the #team poster
+  // with DoctrineSlackPoster so Gate A (6-line cap) + Gate B (30-min
+  // content cooldown) + R4 (tech-refs guard) apply BEFORE the backend
+  // relay call. Overflow target is the #alerts poster — when Gate A
+  // fires, the full body lands in #alerts and the 1-liner in #team.
+  //
+  // Skips DRY_RUN (we want the console poster to see the original text
+  // for dev visibility) and SLACK_DOCTRINE_DISABLED=true (operator kill-
+  // switch). The #alerts poster (alertsSlack) is NOT wrapped — Gate
+  // semantics only apply to top-level #team, and the keyword-alert
+  // service already has its own (severity, thread, day) dedupe.
+  if (
+    !cfg.DRY_RUN &&
+    !cfg.SLACK_DOCTRINE_DISABLED &&
+    process.env.SLACK_CHANNEL_ID
+  ) {
+    slack = new DoctrineSlackPoster({
+      inner: slack,
+      channelId: process.env.SLACK_CHANNEL_ID,
+      overflowPoster: alertsSlack,
+      stateFile: cfg.SLACK_DOCTRINE_STATE_FILE,
+      auditFile: cfg.SLACK_DOCTRINE_AUDIT_FILE,
+      log: (level, msg, meta) => {
+        console.log(JSON.stringify({ ts: new Date().toISOString(), level, msg, ...meta }));
+      },
+    });
+    console.log(
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        level: 'info',
+        msg: 'slack-doctrine.enabled',
+        stateFile: cfg.SLACK_DOCTRINE_STATE_FILE,
+        auditFile: cfg.SLACK_DOCTRINE_AUDIT_FILE,
+        overflowConfigured: !!alertsSlack,
+      }),
     );
   }
 
