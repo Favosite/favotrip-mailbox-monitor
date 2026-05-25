@@ -1,4 +1,8 @@
 import { IncomingWebhook } from '@slack/webhook';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+
+import { evaluate, type DoctrineDecision } from '../slack-doctrine/slack-doctrine.js';
 
 export interface SlackPoster {
   post(text: string): Promise<void>;
@@ -50,3 +54,158 @@ export class BackendApiPoster implements SlackPoster {
     }
   }
 }
+
+
+/**
+ * 2026-05-25: DoctrineSlackPoster wraps any SlackPoster (typically a
+ * BackendApiPoster for #team) with Gate A (line cap) + Gate B (30-min
+ * content cooldown) + tech-refs guard. Mirrors server-claude-worker
+ * `scripts/monitors/slack_post.py` doctrine — ports the same behavior
+ * + state shape so a future golden-case parity test asserts both
+ * impls agree byte-for-byte (see PR plans in favotrip-handbook/proposals).
+ *
+ * Wiring:
+ *   - `inner`           — the original SlackPoster (e.g. BackendApiPoster
+ *                         configured for #team)
+ *   - `channelId`       — channel `inner` posts to (used to decide
+ *                         whether gates apply; gates only fire for
+ *                         CHANNEL_TEAM top-level posts)
+ *   - `overflowPoster`  — separate poster used when Gate A fires; we
+ *                         post the FULL original body here while
+ *                         `inner` gets only the 1-line ACTION summary.
+ *                         Typically a BackendApiPoster configured for
+ *                         #alerts. If omitted (or doctrine doesn't fire
+ *                         Gate A), behaves as no-op.
+ *   - `stateFile`       — JSON cooldown state file (mirror of Python
+ *                         wrapper's slack-post-content-cooldown.json)
+ *   - `auditFile`       — JSONL suppression-audit log; one line per
+ *                         time a post was suppressed or blocked so
+ *                         operators can grep history without a full
+ *                         restart of the runner.
+ *   - `now`             — injectable clock for tests (default Date.now)
+ *
+ * Failure modes:
+ *   - SUPPRESSED / BLOCKED outcomes → suppression-audit row written,
+ *     `post()` returns normally (no throw). Suppression IS success in
+ *     the doctrine model — the post correctly did NOT land.
+ *   - Overflow `inner.post()` for #alerts can throw; we catch + log to
+ *     audit AND still post the 1-liner to #team (1-liner says "see
+ *     #alerts for full content" which is a now-broken pointer, but
+ *     the alternative — failing the whole post — is worse).
+ *   - Inner `inner.post()` for the (possibly-rewritten) text on the
+ *     original channel can throw; we re-throw so the caller sees the
+ *     same error contract as a bare BackendApiPoster.
+ */
+export interface DoctrineSlackPosterOptions {
+  inner: SlackPoster;
+  channelId: string;
+  overflowPoster?: SlackPoster;
+  stateFile: string;
+  auditFile: string;
+  now?: () => number;
+  maxTeamLines?: number;
+  contentCooldownSec?: number;
+  log?: (level: 'info' | 'warn' | 'error', msg: string, meta?: Record<string, unknown>) => void;
+}
+
+export class DoctrineSlackPoster implements SlackPoster {
+  constructor(private readonly opts: DoctrineSlackPosterOptions) {}
+
+  async post(text: string): Promise<void> {
+    const decision = evaluate({
+      channel: this.opts.channelId,
+      text,
+      stateFile: this.opts.stateFile,
+      maxTeamLines: this.opts.maxTeamLines,
+      contentCooldownSec: this.opts.contentCooldownSec,
+      now: this.opts.now,
+    });
+
+    // Decision: post = false → audit + return success (suppression IS success).
+    if (!decision.post) {
+      this.appendAudit({
+        outcome: decision.status,
+        channel: this.opts.channelId,
+        dedupKey: decision.dedupKey,
+        reason: decision.reason,
+        textPreview: text.slice(0, 200),
+      });
+      this.opts.log?.('info', 'slack-doctrine.suppressed', {
+        status: decision.status,
+        channel: this.opts.channelId,
+        dedupKey: decision.dedupKey,
+      });
+      return;
+    }
+
+    // Decision: post = true with overflow → post full body to overflow
+    // channel FIRST (so a 1-liner saying "see #alerts" isn't misleading
+    // if #alerts post fails). Mirrors Python `_hard_cap_team_post`.
+    if (
+      decision.status === 'HARD_CAPPED_TO_ACTION_SUMMARY' &&
+      decision.full_detail_text !== undefined &&
+      this.opts.overflowPoster
+    ) {
+      try {
+        await this.opts.overflowPoster.post(decision.full_detail_text);
+      } catch (err) {
+        // Best-effort: log + continue. Caller still wants 1-liner in #team
+        // for human visibility; the audit captures the overflow failure.
+        const msg = (err as Error).message ?? String(err);
+        this.appendAudit({
+          outcome: 'HARD_CAPPED_OVERFLOW_POST_FAILED',
+          channel: decision.full_detail_routed_to_channel ?? 'unknown-overflow-channel',
+          dedupKey: decision.dedupKey,
+          reason: msg,
+          textPreview: decision.full_detail_text.slice(0, 200),
+        });
+        this.opts.log?.('warn', 'slack-doctrine.overflow.failed', {
+          channel: decision.full_detail_routed_to_channel,
+          err: msg,
+        });
+      }
+    }
+
+    // Now post the (possibly-rewritten) text to the original channel.
+    // Re-throw on failure — caller's error contract is unchanged from
+    // a bare BackendApiPoster.
+    await this.opts.inner.post(decision.text);
+
+    if (decision.status === 'HARD_CAPPED_TO_ACTION_SUMMARY') {
+      this.opts.log?.('info', 'slack-doctrine.hard-capped', {
+        channel: this.opts.channelId,
+        overflowChannel: decision.full_detail_routed_to_channel,
+        dedupKey: decision.dedupKey,
+      });
+    }
+  }
+
+  /** Append one JSONL row to the suppression-audit file. Best-effort
+   *  on I/O errors so a missing-dir + unwritable path don't crash the
+   *  hot Slack-post path. */
+  private appendAudit(row: {
+    outcome: string;
+    channel: string;
+    dedupKey?: string;
+    reason: string;
+    textPreview: string;
+  }): void {
+    try {
+      mkdirSync(dirname(this.opts.auditFile), { recursive: true });
+      const line = JSON.stringify({
+        ts: new Date().toISOString(),
+        ...row,
+      });
+      appendFileSync(this.opts.auditFile, line + '\n', 'utf-8');
+    } catch (err) {
+      // Don't throw from the audit path — observability is best-effort.
+      this.opts.log?.('warn', 'slack-doctrine.audit.failed', {
+        err: (err as Error).message,
+      });
+    }
+  }
+}
+
+// Re-export DoctrineDecision so consumers can type their evaluate() result
+// without an extra deep import.
+export type { DoctrineDecision };
