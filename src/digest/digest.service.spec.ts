@@ -43,35 +43,60 @@ describe('buildDigestMessage — 2026-05-23 rollup-formatting spec (Dennis)', ()
     expect(out).toBe('');
   });
 
-  it('actionable batch produces one concise owner-tagged ACTION line with reasons', () => {
+  it('actionable batch produces one concise owner-tagged ACTION line with reasons (2026-05-26: urgency comes from keyword/flag, not bucket)', () => {
     const mails: ProcessedMail[] = [
-      mkMail({ bucket: 'cancellation_request', confidence: 0.95 }),
+      // bucket alone no longer interrupts — these get urgency from P0 keywords / flags
+      mkMail({ bucket: 'cancellation_request', confidence: 0.95, maskedBody: 'klacht' }),
       mkMail({
         bucket: 'refund_request',
         confidence: 0.81,
         priority: 'HIGH',
-        flags: ['sob_story_money', 'legal_threat'],
+        flags: ['legal_threat'], // single flag → reason 'juridisch'
       }),
     ];
     const out = buildDigestMessage(mails, new Date('2026-05-08T13:00:00Z'));
-    // Single-line ACTION post, no per-mail or bucket breakdown.
     expect(out.split('\n')).toHaveLength(1);
     expect(out).toMatch(
       new RegExp(`^<@${JEANNE_SLACK_UID}> ACTION: behandel 2 urgente klantmails: `),
     );
-    expect(out).toContain('annulering');
-    expect(out).toContain('refund');
+    // Reasons come from the urgency-triggering signals: kw=klacht + flag=legal_threat ("juridisch")
+    expect(out).toContain('klacht');
+    expect(out).toContain('juridisch');
     expect(out).toMatch(/\.$/);
   });
 
-  it('single urgent mail uses singular form + single reason', () => {
+  it('single urgent mail uses singular form + single reason (urgency via P0 keyword)', () => {
     const out = buildDigestMessage(
-      [mkMail({ bucket: 'cancellation_request' })],
+      [mkMail({ bucket: 'cancellation_request', maskedBody: 'kan niet boeken' })],
       new Date('2026-05-08T13:00:00Z'),
     );
     expect(out).toBe(
-      `<@${JEANNE_SLACK_UID}> ACTION: behandel urgente klantmail: annulering.`,
+      `<@${JEANNE_SLACK_UID}> ACTION: behandel urgente klantmail: kan niet boeken.`,
     );
+  });
+
+  it('routine cancellation_request WITHOUT urgent keyword produces NO #team post (2026-05-26: routes to daily rollup)', () => {
+    const out = buildDigestMessage(
+      [mkMail({ bucket: 'cancellation_request', maskedBody: 'graag annulering doorgeven van mijn boeking' })],
+      new Date('2026-05-08T13:00:00Z'),
+    );
+    expect(out).toBe('');
+  });
+
+  it('routine partner_issue WITHOUT urgent keyword produces NO #team post', () => {
+    const out = buildDigestMessage(
+      [mkMail({ bucket: 'partner_issue', maskedBody: 'wachten op partner reactie' })],
+      new Date('2026-05-08T13:00:00Z'),
+    );
+    expect(out).toBe('');
+  });
+
+  it('routine refund_request WITHOUT urgent keyword produces NO #team post', () => {
+    const out = buildDigestMessage(
+      [mkMail({ bucket: 'refund_request', maskedBody: 'graag terugbetaling regelen' })],
+      new Date('2026-05-08T13:00:00Z'),
+    );
+    expect(out).toBe('');
   });
 
   it('manual-only WITHOUT urgent co-signal produces NO #team post', () => {
@@ -141,9 +166,9 @@ describe('buildDigestMessage — 2026-05-23 rollup-formatting spec (Dennis)', ()
     expect(out).not.toMatch(/CEST/);
   });
 
-  it('owner tag is the canonical Jeanne UID + ACTION-prefix on line 1', () => {
+  it('owner tag is the canonical Jeanne UID + ACTION-prefix on line 1 (urgency via P0 keyword)', () => {
     const out = buildDigestMessage(
-      [mkMail({ bucket: 'cancellation_request' })],
+      [mkMail({ bucket: 'cancellation_request', maskedBody: 'kan niet boeken' })],
       new Date(),
     );
     expect(out.startsWith(`<@${JEANNE_SLACK_UID}> ACTION:`)).toBe(true);
@@ -157,29 +182,31 @@ describe('buildDigestMessage — 2026-05-23 rollup-formatting spec (Dennis)', ()
     expect(out).not.toContain('_Technical refs');
   });
 
-  it('dedupes identical reasons across multiple mails (3 cancellations = one reason fragment)', () => {
+  it('dedupes identical reasons across multiple mails (3 P0 keyword hits = one reason fragment)', () => {
     const out = buildDigestMessage(
       [
-        mkMail({ bucket: 'cancellation_request' }),
-        mkMail({ bucket: 'cancellation_request' }),
-        mkMail({ bucket: 'cancellation_request' }),
+        mkMail({ uid: 1, bucket: 'cancellation_request', maskedBody: 'kan niet boeken' }),
+        mkMail({ uid: 2, bucket: 'cancellation_request', maskedBody: 'kan niet boeken' }),
+        mkMail({ uid: 3, bucket: 'cancellation_request', maskedBody: 'kan niet boeken' }),
       ],
       new Date(),
     );
     // Count of unique reason fragment should be 1; total count says 3.
     expect(out).toContain('3 urgente klantmails');
-    expect(out).toContain('annulering');
-    // Should NOT repeat "annulering" three times in the reason list.
-    expect((out.match(/annulering/g) ?? []).length).toBe(1);
+    expect(out).toContain('kan niet boeken');
+    // Should NOT repeat the reason three times in the reason list.
+    expect((out.match(/kan niet boeken/g) ?? []).length).toBe(1);
   });
 
   it('caps shown reasons at 3 and appends "+N meer" for additional unique reasons', () => {
+    // 4 mails with 4 distinct urgency reasons (now that buckets alone don't interrupt,
+    // each mail needs its own keyword/flag co-signal).
     const out = buildDigestMessage(
       [
-        mkMail({ bucket: 'cancellation_request' }),
-        mkMail({ bucket: 'refund_request' }),
-        mkMail({ bucket: 'partner_issue' }),
-        mkMail({ priority: 'HIGH', flags: ['legal_threat'] }),
+        mkMail({ uid: 1, bucket: 'cancellation_request', maskedBody: 'kan niet boeken' }), // → "kan niet boeken"
+        mkMail({ uid: 2, bucket: 'refund_request', maskedBody: 'geld terug nu' }),         // → "geld terug"
+        mkMail({ uid: 3, bucket: 'partner_issue', maskedBody: 'klacht over partner' }),    // → "klacht"
+        mkMail({ uid: 4, priority: 'HIGH', flags: ['legal_threat'] }),                     // → "juridisch"
       ],
       new Date(),
     );
