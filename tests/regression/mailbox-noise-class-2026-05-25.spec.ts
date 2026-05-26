@@ -58,15 +58,24 @@ class RecordingPoster implements SlackPoster {
   }
 }
 
-/** Construct a minimum ProcessedMail with a partner-issue bucket so
- *  buildDigestMessage will treat it as interrupt-worthy. */
+/** Construct a minimum ProcessedMail that buildDigestMessage will treat
+ *  as interrupt-worthy. Post-2026-05-26: partner_issue bucket alone no
+ *  longer interrupts — we need a P0/P1 co-signal. Use a P0 keyword in
+ *  the body so the doctrine regression-fixture continues to exercise the
+ *  Gate A/B duplicate-suppression paths it was designed for. */
 function partnerIssueMail(seedIdx: number): ProcessedMail {
   return {
     id: `mail-${seedIdx}`,
     fromHash: `hash-${seedIdx}`,
     receivedAt: new Date(),
-    subjectMasked: 'partner issue',
-    bodyMasked: 'partner needs attention',
+    // Use the canonical ProcessedMail field names (maskedSubject /
+    // maskedBody). The earlier field names (subjectMasked / bodyMasked)
+    // were silently ignored by interrupt-policy.findUrgentKeyword which
+    // reads m.maskedSubject + m.maskedBody. Post-2026-05-26 the routing
+    // requires a P0/P1 keyword co-signal on the bucket — without one,
+    // the digest produces "" and the test would fail at the sanity step.
+    maskedSubject: 'partner issue',
+    maskedBody: 'partner needs attention; klant kan niet boeken',
     bucket: 'partner_issue',
     bucketScores: { partner_issue: 5 },
     priority: 'NORMAL',
@@ -83,9 +92,11 @@ describe('mailbox noise regression — 2 identical partner-issue posts within 30
   it('builds the same digest twice; 2nd post is suppressed by Gate B', async () => {
     const mails = [partnerIssueMail(1), partnerIssueMail(2)];
     const text = buildDigestMessage(mails);
-    // sanity: digest text is a single ACTION line for partner-issue
+    // sanity: digest text is a single ACTION line. Reason now derived
+    // from the P0 keyword co-signal ("kan niet boeken") rather than the
+    // bucket — see partnerIssueMail() comment for the 2026-05-26 routing.
     expect(text).toMatch(/^<@U[A-Z0-9]+> ACTION: behandel/);
-    expect(text).toContain('partner-issue');
+    expect(text).toContain('kan niet boeken');
 
     const inner = new RecordingPoster();
     const overflow = new RecordingPoster();
@@ -115,7 +126,7 @@ describe('mailbox noise regression — 12-line ACTION digest body is capped to 1
     // Hypothetical: a future regression makes buildDigestMessage emit a
     // multi-paragraph essay. The doctrine catches it before it lands in
     // #team, even if the digest builder itself regresses.
-    const header = '<@U07TM7DKMUF> ACTION: behandel 4 urgente klantmails: partner-issue, refund, annulering, +1 meer.';
+    const header = '<@U0961S209GA> ACTION: behandel 4 urgente klantmails: partner-issue, refund, annulering, +1 meer.';
     const longBody = [
       header,
       '',
@@ -173,7 +184,7 @@ describe('mailbox noise regression — observed 2026-05-25 burst pattern', () =>
     });
 
     const text =
-      '<@U07TM7DKMUF> ACTION: behandel urgente klantmail: partner-issue.';
+      '<@U0961S209GA> ACTION: behandel urgente klantmail: partner-issue.';
 
     // Burst: 4 identical posts at t = 0, 7, 14, 21 min (all within 30 min)
     for (let i = 0; i < 4; i++) {
@@ -205,7 +216,7 @@ describe('mailbox noise regression — observed 2026-05-25 burst pattern', () =>
     });
 
     const text =
-      '<@U07TM7DKMUF> ACTION: behandel urgente klantmail: partner-issue.';
+      '<@U0961S209GA> ACTION: behandel urgente klantmail: partner-issue.';
     for (let i = 0; i < 6; i++) {
       await poster.post(text);
       nowSec += 5 * 60;

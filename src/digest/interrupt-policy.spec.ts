@@ -53,12 +53,26 @@ describe('URGENT_KEYWORDS / findUrgentKeyword', () => {
 });
 
 describe('classifyInterrupt — interrupt-worthy cases', () => {
+  // Dennis 2026-05-26: INTERRUPT_BUCKETS is now empty. The 3 former
+  // auto-interrupt buckets (cancellation_request, refund_request,
+  // partner_issue) now route to the daily rollup UNLESS a P0/P1
+  // co-signal (keyword/flag) is present. Tests below validate the
+  // new routing.
   for (const bucket of ['cancellation_request', 'refund_request', 'partner_issue'] as Bucket[]) {
-    it(`bucket=${bucket} always interrupts`, () => {
+    it(`bucket=${bucket} alone does NOT interrupt (routine; goes to daily rollup)`, () => {
       const d = classifyInterrupt(mkMail({ bucket }));
+      expect(d.interrupt).toBe(false);
+      // Falls through to 'other_routine' suppression reason since
+      // these buckets don't match the dedicated suppression branches.
+      expect(d.reason).toBe('other_routine');
+    });
+
+    it(`bucket=${bucket} WITH a P0 keyword DOES interrupt`, () => {
+      const d = classifyInterrupt(
+        mkMail({ bucket, maskedBody: 'klant kan niet boeken vandaag' }),
+      );
       expect(d.interrupt).toBe(true);
-      expect(d.reason).toBe('interrupt');
-      expect(d.detail).toContain(bucket);
+      expect(d.detail).toContain('kan niet boeken');
     });
   }
 
@@ -96,10 +110,18 @@ describe('classifyInterrupt — interrupt-worthy cases', () => {
     expect(d.detail).toContain('urgent-kw=voucher werkt niet');
   });
 
-  it('manualOnly WITH refund_request bucket DOES interrupt (bucket wins)', () => {
+  it('manualOnly WITH refund_request bucket does NOT auto-interrupt (Dennis 2026-05-26: bucket removed from INTERRUPT_BUCKETS)', () => {
     const d = classifyInterrupt(mkMail({ manualOnly: true, bucket: 'refund_request' }));
+    expect(d.interrupt).toBe(false);
+    expect(d.reason).toBe('manual_only_nonurgent');
+  });
+
+  it('manualOnly WITH refund_request bucket AND a P0 keyword DOES interrupt', () => {
+    const d = classifyInterrupt(
+      mkMail({ manualOnly: true, bucket: 'refund_request', maskedBody: 'cannot pay anymore' }),
+    );
     expect(d.interrupt).toBe(true);
-    expect(d.detail).toBe('bucket=refund_request');
+    expect(d.detail).toContain('cannot pay');
   });
 
   it('urgent keyword in subject interrupts', () => {
@@ -189,11 +211,20 @@ describe('isAllRoutine', () => {
     ).toBe(true);
   });
 
-  it('mixed batch with one cancellation_request returns false', () => {
+  it('mixed batch with cancellation_request (no urgent keyword) returns true — all routine now (Dennis 2026-05-26)', () => {
     expect(
       isAllRoutine([
         mkMail({ bucket: 'booking_question' }),
         mkMail({ uid: 2, bucket: 'cancellation_request' }),
+      ]),
+    ).toBe(true);
+  });
+
+  it('mixed batch with cancellation_request CARRYING a P0 keyword returns false', () => {
+    expect(
+      isAllRoutine([
+        mkMail({ bucket: 'booking_question' }),
+        mkMail({ uid: 2, bucket: 'cancellation_request', maskedBody: 'kan niet boeken' }),
       ]),
     ).toBe(false);
   });
@@ -209,40 +240,44 @@ describe('isAllRoutine', () => {
 });
 
 describe('classifyForSuppression', () => {
-  it('returns only the routine mails with their reason codes attached', () => {
+  it('returns the routine mails with their reason codes (2026-05-26: cancellation_request now routine)', () => {
     const mails = [
       mkMail({ uid: 1, bucket: 'booking_question' }), // low_priority
-      mkMail({ uid: 2, bucket: 'cancellation_request' }), // INTERRUPT — excluded
+      mkMail({ uid: 2, bucket: 'cancellation_request' }), // 2026-05-26: now routine → other_routine
       mkMail({ uid: 3, bucket: 'needs_human_review' }), // needs_human_review_nonurgent
       mkMail({ uid: 4, flags: ['repeated_mailer'], priority: 'HIGH' }), // repeated_mailer_only
     ];
     const result = classifyForSuppression(mails);
-    expect(result).toHaveLength(3);
-    expect(result.map((c) => c.reason).sort()).toEqual([
+    expect(result).toHaveLength(4); // was 3 — cancellation_request now included
+    const reasons = result.map((c) => c.reason).sort();
+    expect(reasons).toEqual([
       'low_priority',
       'needs_human_review_nonurgent',
+      'other_routine',
       'repeated_mailer_only',
     ]);
-    // Excludes the cancellation_request (interrupt-worthy)
-    expect(result.find((c) => c.mail.bucket === 'cancellation_request')).toBeUndefined();
+    // cancellation_request now appears in suppressed list (other_routine)
+    const cancel = result.find((c) => c.mail.bucket === 'cancellation_request');
+    expect(cancel).toBeDefined();
+    expect(cancel?.reason).toBe('other_routine');
   });
 
-  it('returns empty array when every mail is interrupt-worthy', () => {
+  it('returns empty array when every mail is interrupt-worthy (urgent keywords / flags only now)', () => {
     const mails = [
-      mkMail({ uid: 1, bucket: 'cancellation_request' }),
-      mkMail({ uid: 2, flags: ['legal_threat'], priority: 'HIGH' }),
+      mkMail({ uid: 1, maskedBody: 'kan niet boeken' }), // P0 keyword → interrupt
+      mkMail({ uid: 2, flags: ['legal_threat'], priority: 'HIGH' }), // INTERRUPT flag
     ];
     expect(classifyForSuppression(mails)).toEqual([]);
   });
 
-  it('manual_only_nonurgent surfaces in classifyForSuppression output (2026-05-23)', () => {
+  it('manual_only_nonurgent surfaces in classifyForSuppression output (2026-05-26: refund_request bucket no longer overrides)', () => {
     const mails = [
       mkMail({ uid: 1, manualOnly: true }), // manual_only_nonurgent
-      mkMail({ uid: 2, manualOnly: true, bucket: 'refund_request' }), // INTERRUPT
+      mkMail({ uid: 2, manualOnly: true, bucket: 'refund_request' }), // 2026-05-26: manual_only_nonurgent (was: INTERRUPT)
       mkMail({ uid: 3, manualOnly: true, bucket: 'needs_human_review' }), // manual_only_nonurgent
     ];
     const result = classifyForSuppression(mails);
-    expect(result).toHaveLength(2);
+    expect(result).toHaveLength(3); // was 2 — refund_request now included as routine
     expect(result.every((c) => c.reason === 'manual_only_nonurgent')).toBe(true);
   });
 });
@@ -252,9 +287,25 @@ describe('constants are well-formed', () => {
     expect(INTERRUPT_FLAGS.has('repeated_mailer')).toBe(false);
   });
 
-  it('INTERRUPT_BUCKETS contains the 3 customer-impact buckets', () => {
-    expect(INTERRUPT_BUCKETS.has('cancellation_request')).toBe(true);
-    expect(INTERRUPT_BUCKETS.has('refund_request')).toBe(true);
-    expect(INTERRUPT_BUCKETS.has('partner_issue')).toBe(true);
+  it('INTERRUPT_BUCKETS is EMPTY (Dennis 2026-05-26: routine cancellation/refund/partner_issue → daily rollup, not immediate)', () => {
+    expect(INTERRUPT_BUCKETS.size).toBe(0);
+    expect(INTERRUPT_BUCKETS.has('cancellation_request')).toBe(false);
+    expect(INTERRUPT_BUCKETS.has('refund_request')).toBe(false);
+    expect(INTERRUPT_BUCKETS.has('partner_issue')).toBe(false);
+  });
+
+  it('URGENT_KEYWORDS no longer contains routine "annulering" or "refund" (Dennis 2026-05-26)', () => {
+    expect(URGENT_KEYWORDS).not.toContain('annulering');
+    expect(URGENT_KEYWORDS).not.toContain('refund');
+  });
+
+  it('URGENT_KEYWORDS contains the P0 customer-flow-blockers', () => {
+    expect(URGENT_KEYWORDS).toContain('kan niet boeken');
+    expect(URGENT_KEYWORDS).toContain('cannot book');
+    expect(URGENT_KEYWORDS).toContain('kan niet betalen');
+    expect(URGENT_KEYWORDS).toContain('cannot pay');
+    expect(URGENT_KEYWORDS).toContain('voucher werkt niet');
+    expect(URGENT_KEYWORDS).toContain('voucher unusable');
+    expect(URGENT_KEYWORDS).toContain('kan niet verzilveren');
   });
 });

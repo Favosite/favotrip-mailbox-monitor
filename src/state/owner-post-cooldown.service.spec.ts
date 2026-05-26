@@ -21,34 +21,34 @@ describe('OwnerPostCooldownStore', () => {
   it('load() on missing file → empty state, lastPostAt undefined', async () => {
     const s = new OwnerPostCooldownStore(file);
     await s.load();
-    expect(s.lastPostAt('U07TM7DKMUF')).toBeUndefined();
-    expect(s.inCooldown('U07TM7DKMUF', new Date(), 60)).toBe(false);
+    expect(s.lastPostAt('U0961S209GA')).toBeUndefined();
+    expect(s.inCooldown('U0961S209GA', new Date(), 60)).toBe(false);
   });
 
   it('markPosted() + save() persists and reloads correctly', async () => {
     const at = new Date('2026-05-23T20:30:00.000Z');
     const a = new OwnerPostCooldownStore(file);
     await a.load();
-    a.markPosted('U07TM7DKMUF', at);
+    a.markPosted('U0961S209GA', at);
     await a.save();
 
     const b = new OwnerPostCooldownStore(file);
     await b.load();
-    expect(b.lastPostAt('U07TM7DKMUF')?.toISOString()).toBe(at.toISOString());
+    expect(b.lastPostAt('U0961S209GA')?.toISOString()).toBe(at.toISOString());
   });
 
   it('inCooldown() is true within window, false outside', async () => {
     const s = new OwnerPostCooldownStore(file);
     await s.load();
-    s.markPosted('U07TM7DKMUF', new Date('2026-05-23T20:30:00.000Z'));
+    s.markPosted('U0961S209GA', new Date('2026-05-23T20:30:00.000Z'));
 
     // 30 min later → inside 60-min cooldown
     expect(
-      s.inCooldown('U07TM7DKMUF', new Date('2026-05-23T21:00:00.000Z'), 60),
+      s.inCooldown('U0961S209GA', new Date('2026-05-23T21:00:00.000Z'), 60),
     ).toBe(true);
     // 61 min later → outside 60-min cooldown
     expect(
-      s.inCooldown('U07TM7DKMUF', new Date('2026-05-23T21:31:00.000Z'), 60),
+      s.inCooldown('U0961S209GA', new Date('2026-05-23T21:31:00.000Z'), 60),
     ).toBe(false);
   });
 

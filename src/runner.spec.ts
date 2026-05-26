@@ -128,14 +128,18 @@ describe('DigestRunner', () => {
     const slack = new CapturePoster();
 
     const { ImapFetchService } = await import('./imap/imap.service.js');
+    // Dennis 2026-05-26: use a P0 keyword in the body so this mail is
+    // genuinely interrupt-worthy under the post-2026-05-26 routing.
+    // A pure routine "Annulering doorgeven" without urgency now lands
+    // in the daily rollup, not the immediate #team digest.
     const spy = vi.spyOn(ImapFetchService.prototype, 'fetchSince').mockResolvedValue([
       {
         uid: 1,
         fromAddress: 'jan@example.com',
         fromName: 'Jan Jansen',
         toAddress: 'klantenservice@favotrip.nl',
-        subject: 'Annulering FT-AB-CD-EF',
-        body: 'Wij willen onze annulering doorgeven.',
+        subject: 'voucher werkt niet',
+        body: 'Hallo, mijn voucher werkt niet, kan iemand mij helpen?',
         date: new Date('2026-05-08T10:00:00Z'),
         reservationCode: 'FT-AB-CD-EF',
       },
@@ -150,7 +154,7 @@ describe('DigestRunner', () => {
 
     await runner.runOnce(new Date('2026-05-08T10:01:00Z'));
     expect(slack.posted.length).toBe(1);
-    expect(slack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel (urgente klantmail|\d+ urgente klantmails):/);
+    expect(slack.posted[0]).toMatch(/^<@U0961S209GA> ACTION: behandel (urgente klantmail|\d+ urgente klantmails):/);
     expect(slack.posted[0]).not.toContain('cancellation_request'); // doctrine: no bucket leak
     spy.mockRestore();
   });
@@ -214,7 +218,7 @@ describe('DigestRunner', () => {
 
     await runner.runOnce(new Date('2026-05-22T10:11:00Z'));
     expect(slack.posted.length).toBe(1);
-    expect(slack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel (urgente klantmail|\d+ urgente klantmails):/);
+    expect(slack.posted[0]).toMatch(/^<@U0961S209GA> ACTION: behandel (urgente klantmail|\d+ urgente klantmails):/);
     // 2026-05-23 short format: HIGH no longer leaks; assert the urgent
     // reason fragment for legal_threat instead.
     expect(slack.posted[0]).toContain('juridisch');
@@ -250,7 +254,7 @@ describe('DigestRunner', () => {
     expect(alertsSlack.posted.length).toBe(1);
     expect(alertsSlack.posted[0]).toMatch(/P0|P1/);
     expect(teamSlack.posted.length).toBe(1);
-    expect(teamSlack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel (urgente klantmail|\d+ urgente klantmails):/);
+    expect(teamSlack.posted[0]).toMatch(/^<@U0961S209GA> ACTION: behandel (urgente klantmail|\d+ urgente klantmails):/);
     spy.mockRestore();
   });
 
@@ -397,10 +401,10 @@ describe('DigestRunner', () => {
         date: new Date('2026-05-22T15:00:00Z') },
     ], slack);
     expect(slack.posted.length).toBe(1);
-    expect(slack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel (urgente klantmail|\d+ urgente klantmails):/);
+    expect(slack.posted[0]).toMatch(/^<@U0961S209GA> ACTION: behandel (urgente klantmail|\d+ urgente klantmails):/);
   });
 
-  it('Scenario 7: cancellation_request → directly posted (compliant owner-tagged message)', async () => {
+  it('Scenario 7: routine cancellation_request → NO immediate post (Dennis 2026-05-26: routes to daily rollup)', async () => {
     const cfg = mkCfg();
     const slack = new CapturePoster();
     await runWithImap(cfg, [
@@ -409,9 +413,22 @@ describe('DigestRunner', () => {
         body: 'Wij willen onze boeking annuleren wegens ziekte.',
         date: new Date('2026-05-22T15:00:00Z') },
     ], slack);
+    // Was: 1 immediate post. Now: 0 — routine cancellation goes to daily rollup.
+    // Real "klacht over annulering" (with klacht keyword) would still post.
+    expect(slack.posted.length).toBe(0);
+  });
+
+  it('Scenario 7b: cancellation_request WITH klacht keyword → STILL directly posted', async () => {
+    const cfg = mkCfg();
+    const slack = new CapturePoster();
+    await runWithImap(cfg, [
+      { uid: 1, fromAddress: 'cancel@example.com', toAddress: 'klantenservice@favotrip.nl',
+        subject: 'Annulering FT-AB-CD-EF',
+        body: 'Wij willen onze boeking annuleren en ik heb een klacht over hoe dit gegaan is.',
+        date: new Date('2026-05-22T15:00:00Z') },
+    ], slack);
     expect(slack.posted.length).toBe(1);
-    expect(slack.posted[0]).toMatch(/^<@U07TM7DKMUF> ACTION: behandel (urgente klantmail|\d+ urgente klantmails):/);
-    expect(slack.posted[0]).not.toContain('cancellation_request'); // doctrine: no bucket leak
+    expect(slack.posted[0]).toMatch(/^<@U0961S209GA> ACTION: behandel/);
   });
 
   it('Scenario 10: legal_threat flag → directly posted', async () => {
@@ -592,7 +609,7 @@ describe('DigestRunner — 2026-05-23 actionable-spam policy', () => {
     // "P1" or "voucher werkt niet" depending on classifier wiring.
     // Both are valid short urgency labels per Dennis 2026-05-23.
     expect(slack.posted[0]).toMatch(
-      /^<@U07TM7DKMUF> ACTION: behandel urgente klantmail: (P1|voucher werkt niet)\.$/,
+      /^<@U0961S209GA> ACTION: behandel urgente klantmail: (P1|voucher werkt niet)\.$/,
     );
   });
 
@@ -683,7 +700,7 @@ describe('DigestRunner — 2026-05-23 actionable-spam policy', () => {
     ]) {
       expect(post).not.toContain(banned);
     }
-    expect(post).toMatch(/^<@U07TM7DKMUF> ACTION: behandel/);
+    expect(post).toMatch(/^<@U0961S209GA> ACTION: behandel/);
   });
 
   it('Cooldown bypass: P1+ keywordHit posts even within cooldown window', async () => {

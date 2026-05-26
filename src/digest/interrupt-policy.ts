@@ -49,29 +49,59 @@ import type { Bucket, ManipulationFlag, ProcessedMail } from '../types.js';
  * we deliberately avoid English / formal-Dutch synonyms that would broaden
  * the match too much.
  */
+// Dennis 2026-05-26: split into P0/P1 (customer-flow-blocker OR strong
+// customer agitation; both need IMMEDIATE #team mention) vs ROUTINE
+// (annulering / refund — daily-rollup only). Was: single URGENT_KEYWORDS
+// list including "annulering" + "refund" which caused per-arrival #team
+// pings for routine mailbox work Jeanne sees in her inbox anyway.
+//
+// Adding to this list = more #team pings. Removing = pushed to daily
+// rollup. Keep this list tight: only true customer-flow-blockers + true
+// agitation.
 export const URGENT_KEYWORDS: readonly string[] = [
+  // P0 — customer-flow-blocker (can't book / can't pay / voucher broken)
   'betaalmodule',
   'betaling lukt niet',
   'kan niet betalen',
+  'cannot pay',
+  'kan niet boeken',
+  'cannot book',
   'voucher werkt niet',
+  'voucher unusable',
+  'kan niet verzilveren',
   'code werkt niet',
   'checkout',
-  'refund',
-  'annulering',
+  // P1 — customer agitation / billing dispute (real money at stake)
   'klacht',
   'geld terug',
   'dubbel betaald',
+  // Removed 2026-05-26:
+  //   'annulering' → routine; goes to daily rollup. Jeanne sees the mail
+  //                  in her inbox same morning. Real cancellation
+  //                  emergencies (e.g. "klacht over annulering") still
+  //                  match via 'klacht'.
+  //   'refund'     → routine; same reasoning. "geld terug" still matches
+  //                  the agitated cases.
 ];
 
 /**
- * Buckets that always trigger immediate #team posting regardless of
- * priority or flags. Customer-impact / money-impact / partner escalation.
+ * Buckets that auto-trigger immediate #team posting irrespective of
+ * keywords/flags.
+ *
+ * Dennis 2026-05-26: EMPTIED. Previously cancellation_request,
+ * refund_request, partner_issue triggered per-arrival #team pings for
+ * Jeanne — but routine cancellations/refunds/partner-issues are work
+ * she sees in her inbox every morning anyway; the #team ping was added
+ * noise on top of inbox work. These buckets now route to the daily
+ * rollup unless a URGENT_KEYWORDS or INTERRUPT_FLAGS or keywordHit
+ * P0/P1 co-occurs (in which case the per-mail urgency overrides).
+ *
+ * Result: a customer who emails "annulering, klacht over fraude" gets
+ * a #team ping via the "klacht" keyword. A customer emailing routine
+ * "annulering doorgeven, hier mijn boekingsnummer" lands in the daily
+ * rollup like any other routine triage item.
  */
-export const INTERRUPT_BUCKETS: ReadonlySet<Bucket> = new Set<Bucket>([
-  'cancellation_request',
-  'refund_request',
-  'partner_issue',
-]);
+export const INTERRUPT_BUCKETS: ReadonlySet<Bucket> = new Set<Bucket>([]);
 
 /**
  * Manipulation flags that signal genuine content urgency. Critically

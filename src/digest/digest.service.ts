@@ -4,9 +4,9 @@ import { classifyInterrupt } from './interrupt-policy.js';
 /**
  * Slack user-ID for Jeanne (klantenservice lead). Used as the owner-tag
  * in actionable #team posts so per CLAUDE.md 5-point doctrine line 1 is
- * `<@U07TM7DKMUF> ACTION: …`. Mirrors server-claude-worker constants.
+ * `<@U0961S209GA> ACTION: …`. Mirrors server-claude-worker constants.
  */
-export const JEANNE_SLACK_UID = 'U07TM7DKMUF';
+export const JEANNE_SLACK_UID = 'U0961S209GA';
 
 export function buildStats(mails: ProcessedMail[]): DigestStats {
   const byBucket: Partial<Record<Bucket, number>> = {};
