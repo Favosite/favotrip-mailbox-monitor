@@ -115,7 +115,7 @@ describe('mailbox noise regression — 12-line ACTION digest body is capped to 1
     // Hypothetical: a future regression makes buildDigestMessage emit a
     // multi-paragraph essay. The doctrine catches it before it lands in
     // #team, even if the digest builder itself regresses.
-    const header = '<@U07TM7DKMUF> ACTION: behandel 4 urgente klantmails: partner-issue, refund, annulering, +1 meer.';
+    const header = '<@U0961S209GA> ACTION: behandel 4 urgente klantmails: partner-issue, refund, annulering, +1 meer.';
     const longBody = [
       header,
       '',
@@ -173,7 +173,7 @@ describe('mailbox noise regression — observed 2026-05-25 burst pattern', () =>
     });
 
     const text =
-      '<@U07TM7DKMUF> ACTION: behandel urgente klantmail: partner-issue.';
+      '<@U0961S209GA> ACTION: behandel urgente klantmail: partner-issue.';
 
     // Burst: 4 identical posts at t = 0, 7, 14, 21 min (all within 30 min)
     for (let i = 0; i < 4; i++) {
@@ -205,7 +205,7 @@ describe('mailbox noise regression — observed 2026-05-25 burst pattern', () =>
     });
 
     const text =
-      '<@U07TM7DKMUF> ACTION: behandel urgente klantmail: partner-issue.';
+      '<@U0961S209GA> ACTION: behandel urgente klantmail: partner-issue.';
     for (let i = 0; i < 6; i++) {
       await poster.post(text);
       nowSec += 5 * 60;

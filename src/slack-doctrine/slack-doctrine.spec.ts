@@ -223,7 +223,7 @@ describe('golden case 9 — normalization makes near-duplicates collide', () => 
       'Posted at 2026-05-23T14:18:36Z to thread 1779469278.897769.\n' +
       'Details: https://github.com/foo/bar/pull/123';
     const b =
-      '<@U07TM7DKMUF> ACTION: investigate cluster X.\n' +
+      '<@U0961S209GA> ACTION: investigate cluster X.\n' +
       'Posted at 2026-05-23T14:43:17Z to thread 1779470862.562889.\n' +
       'Details: https://github.com/foo/bar/pull/999';
     const first = evaluate({ channel: CHANNEL_TEAM, text: a, stateFile: state });

@@ -149,7 +149,7 @@ describe('DoctrineSlackPoster — Gate B (content cooldown)', () => {
       stateFile,
       auditFile,
     });
-    const body = '<@U07TM7DKMUF> ACTION: behandel klantmail: partner-issue.';
+    const body = '<@U0961S209GA> ACTION: behandel klantmail: partner-issue.';
     await poster.post(body);
     await poster.post(body);
     expect(inner.posts).toEqual([body]); // only first lands
@@ -237,7 +237,7 @@ describe('DoctrineSlackPoster — audit JSONL format', () => {
       stateFile,
       auditFile,
     });
-    const body = '<@U07TM7DKMUF> ACTION: behandel partner-issue.';
+    const body = '<@U0961S209GA> ACTION: behandel partner-issue.';
     await poster.post(body);
     await poster.post(body); // suppressed
     const audit = readFileSync(auditFile, 'utf-8').trim();

@@ -18,7 +18,7 @@ import path from 'node:path';
  *
  * File format (forward-compatible for multiple owners):
  *   {
- *     "U07TM7DKMUF": "2026-05-23T20:30:00.000Z",
+ *     "U0961S209GA": "2026-05-23T20:30:00.000Z",
  *     "U083ZU8PH43": "..."     // future
  *   }
  *
