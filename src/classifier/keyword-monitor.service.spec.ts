@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyKeywords, stripHtml } from './keyword-monitor.service.js';
+import { classifyKeywords, isNonCustomerSender, stripHtml } from './keyword-monitor.service.js';
 
 describe('classifyKeywords — P0 matches', () => {
   it('matches "kan niet betalen" as P0', () => {
@@ -200,6 +200,101 @@ describe('classifyKeywords — match-rules', () => {
   it('runbook hint for no_availability references booking_error_events', () => {
     const r = classifyKeywords({ subject: '', body: 'Geen beschikbaarheid op die data.' });
     expect(r!.runbook).toMatch(/booking_error_events/i);
+  });
+});
+
+describe('classifyKeywords — non-customer sender suppression', () => {
+  // Regression for the 2026-05-26 false-positive cluster pair
+  // (1779801012.168929 partner-side @phl-tickets.eu reply +
+  // 1779802505.985619 staff @favotrip.nl reply on the same
+  // "Wijzigingsverzoek bestelling 29096" thread). Both fired the
+  // price_drift runbook on "duurder" matched in quoted upstream text.
+  it('suppresses "duurder" on @favotrip.nl staff outbound reply', () => {
+    const r = classifyKeywords({
+      subject: 'Re: RE: Wijzigingsverzoek bestelling 29096',
+      body: 'Bedankt voor je bericht, super fijn dat het mogelijk is! De optie is iets duurder maar de tickets zitten in de bijlage.',
+      fromAddress: 'jeanne@favotrip.nl',
+    });
+    expect(r).toBeNull();
+  });
+
+  it('suppresses "duurder" on @phl-tickets.eu partner reply', () => {
+    const r = classifyKeywords({
+      subject: 'RE: Wijzigingsverzoek bestelling 29096',
+      body: 'Yes the swap is possible — the new package is duurder by 12 EUR.',
+      fromAddress: 'support@phl-tickets.eu',
+    });
+    expect(r).toBeNull();
+  });
+
+  it('suppresses on ratehawk.com partner reply', () => {
+    const r = classifyKeywords({
+      subject: 'Refund request',
+      body: 'The new rate is duurder — please confirm if you accept.',
+      fromAddress: 'noreply@ratehawk.com',
+    });
+    expect(r).toBeNull();
+  });
+
+  it('suppresses on subdomain of a partner (mail.ratehawk.com)', () => {
+    const r = classifyKeywords({
+      subject: '',
+      body: 'kan niet betalen want het is duurder geworden',
+      fromAddress: 'bot@mail.ratehawk.com',
+    });
+    expect(r).toBeNull();
+  });
+
+  it('still fires for the same content from a real customer domain', () => {
+    const r = classifyKeywords({
+      subject: 'Hulp',
+      body: 'Bij het afrekenen werd alles duurder.',
+      fromAddress: 'klant@gmail.com',
+    });
+    expect(r).not.toBeNull();
+    expect(r!.severity).toBe('P1');
+  });
+
+  it('still fires when fromAddress is missing (backwards-compatible)', () => {
+    const r = classifyKeywords({
+      subject: 'Hulp',
+      body: 'Bij het afrekenen werd alles duurder.',
+    });
+    expect(r).not.toBeNull();
+    expect(r!.severity).toBe('P1');
+  });
+});
+
+describe('isNonCustomerSender', () => {
+  it('matches exact @favotrip.nl', () => {
+    expect(isNonCustomerSender('jeanne@favotrip.nl')).toBe(true);
+  });
+
+  it('matches exact @phl-tickets.eu', () => {
+    expect(isNonCustomerSender('support@phl-tickets.eu')).toBe(true);
+  });
+
+  it('matches subdomain of partner', () => {
+    expect(isNonCustomerSender('bot@mail.ratehawk.com')).toBe(true);
+  });
+
+  it('is case-insensitive on the domain', () => {
+    expect(isNonCustomerSender('Jeanne@Favotrip.NL')).toBe(true);
+  });
+
+  it('returns false for a real customer domain', () => {
+    expect(isNonCustomerSender('klant@gmail.com')).toBe(false);
+  });
+
+  it('returns false for empty/missing input', () => {
+    expect(isNonCustomerSender(undefined)).toBe(false);
+    expect(isNonCustomerSender(null)).toBe(false);
+    expect(isNonCustomerSender('')).toBe(false);
+    expect(isNonCustomerSender('not-an-email')).toBe(false);
+  });
+
+  it('does NOT confuse a lookalike domain (favotrip.nl.attacker.example)', () => {
+    expect(isNonCustomerSender('phish@favotrip.nl.attacker.example')).toBe(false);
   });
 });
 

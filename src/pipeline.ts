@@ -25,7 +25,11 @@ export function processMails(raw: RawMail[], hashStore: RepeatedMailerStore): Pr
     // content (manualOnly=true) so we'd otherwise miss "kan niet
     // betalen" in those mails. The hit itself only ever touches MASKED
     // fields when posting to Slack.
-    const keywordHit = classifyKeywords({ subject: m.subject, body: m.body });
+    const keywordHit = classifyKeywords({
+      subject: m.subject,
+      body: m.body,
+      fromAddress: m.fromAddress,
+    });
 
     // P0/P1 keyword hits escalate priority to HIGH (mirrors the
     // manipulation-flag escalation above). Downstream Slack #alerts

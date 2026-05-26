@@ -64,6 +64,45 @@ const RUNBOOKS: Record<RunbookKey, string> = {
  */
 const SEVERITY_RANK: Record<KeywordSeverity, number> = { P0: 2, P1: 1 };
 
+/**
+ * Sender domains that must never produce a customer-complaint keyword
+ * alert. Two classes:
+ *
+ *   1. `favotrip.nl` — staff outbound. The shared inbox sees its own
+ *      outgoing replies via Bcc/forward, and those replies often quote
+ *      the customer's "duurder" / "prijs is hoger" message verbatim,
+ *      producing a false-positive customer-complaint alert.
+ *
+ *   2. Known B2B partner reply domains. Partner emails use the same
+ *      vocabulary about pricing/discounts ("dit pakket is duurder dan
+ *      het andere") but the order numbers in their subjects are
+ *      partner-side identifiers, not Favotrip reservation_ids. The
+ *      `price_drift` runbook is the wrong response. See
+ *      memory/project_mailbox_keyword_b2b_partner_fp.md for the prior
+ *      incident analysis.
+ *
+ * Match is exact-or-subdomain (`mail.ratehawk.com` also matches).
+ */
+export const NON_CUSTOMER_SENDER_DOMAINS: ReadonlySet<string> = new Set([
+  'favotrip.nl',
+  'phl-tickets.eu',
+  'ratehawk.com',
+  'viator.com',
+  'musement.com',
+]);
+
+export function isNonCustomerSender(fromAddress: string | undefined | null): boolean {
+  if (!fromAddress) return false;
+  const at = fromAddress.lastIndexOf('@');
+  if (at < 0) return false;
+  const domain = fromAddress.slice(at + 1).toLowerCase().trim();
+  if (!domain) return false;
+  for (const d of NON_CUSTOMER_SENDER_DOMAINS) {
+    if (domain === d || domain.endsWith('.' + d)) return true;
+  }
+  return false;
+}
+
 export const KEYWORD_SPECS: KeywordSpec[] = [
   // ── P0: payment-blocking ────────────────────────────────────────────
   { severity: 'P0', phrase: 'kan niet betalen', runbookKey: 'payment_blocked' },
@@ -183,7 +222,15 @@ export function classifyKeywords(input: {
   subject: string;
   body: string;
   html?: string;
+  fromAddress?: string | null;
 }): KeywordHit | null {
+  // 0. Suppress when sender is not a customer: staff outbound (favotrip.nl)
+  //    or a known B2B partner reply domain. Their mails quote customer
+  //    vocabulary verbatim and produce wrong-runbook false positives.
+  if (isNonCustomerSender(input.fromAddress)) {
+    return null;
+  }
+
   // 1. Build the corpus: subject + body + optional HTML-stripped fallback
   //    (defensive — caller-provided html only used if body is empty).
   const bodyText = input.body && input.body.trim().length > 0
