@@ -96,6 +96,49 @@ export const KEYWORD_SPECS: KeywordSpec[] = [
 ];
 
 /**
+ * Known B2B partner sender domains.
+ *
+ * The keyword runbooks all assume the sender is a Favotrip CUSTOMER
+ * ("customer cannot pay / book / voucher unusable"). Partner backoffices
+ * reply on internal Wijzigingsverzoek / voucher-block threads using the
+ * SAME vocabulary ("geen beschikbaarheid", "prijs veranderd", "voucher
+ * blokkeren") about the partner's own order ids, which fires a
+ * customer-impact P0/P1 #alerts page that is a false positive. The order
+ * number in a partner subject is the PARTNER's identifier, not a Favotrip
+ * reservation_id (max ~2142) / reservation_number (FT-XX-XX-XX).
+ *
+ * Partner correspondence is already handled by the 6-bucket classifier
+ * (partner_issue bucket) and lands in Jeanne's inbox via the reply chain,
+ * so suppressing the keyword page for these senders loses no signal.
+ *
+ * Match is on the registrable domain SUFFIX so subdomains
+ * (mail.ratehawk.com) and backoffice mailers (backoffice@crossover.nl)
+ * are covered.
+ */
+export const PARTNER_SENDER_DOMAINS: readonly string[] = [
+  'crossover.nl', // Backoffice ING (externally-sold ING voucher fulfilment)
+  'phl-tickets.eu', // Phantasialand
+  'ratehawk.com',
+  'viator.com',
+  'musement.com',
+];
+
+/**
+ * True when `fromAddress` belongs to a known B2B partner domain. Empty /
+ * malformed addresses return false (treat as customer -> do not suppress).
+ */
+export function isPartnerSender(fromAddress: string | undefined): boolean {
+  if (!fromAddress) return false;
+  const at = fromAddress.lastIndexOf('@');
+  if (at === -1) return false;
+  const domain = fromAddress.slice(at + 1).trim().toLowerCase();
+  if (!domain) return false;
+  return PARTNER_SENDER_DOMAINS.some(
+    (p) => domain === p || domain.endsWith('.' + p),
+  );
+}
+
+/**
  * Strip diacritics so `duurder` matches `duurder` with NL combining
  * marks, and so accented Latin variants of "Klärna"/"Stripé" etc. still
  * match. NFD-decomposes then drops combining marks.
@@ -183,7 +226,24 @@ export function classifyKeywords(input: {
   subject: string;
   body: string;
   html?: string;
+  /**
+   * Raw sender address. When it belongs to a known B2B partner domain the
+   * customer-impact keyword runbooks do not apply, so we suppress the hit
+   * (return null) rather than fire a false-positive #alerts page. Optional
+   * so existing callers / tests keep working (undefined => not a partner).
+   */
+  fromAddress?: string;
 }): KeywordHit | null {
+  // 0. Partner-domain guard. Partner backoffices (ratehawk, viator,
+  //    phl-tickets, crossover/ING) reply on internal threads using the
+  //    same complaint vocabulary about THEIR order ids; classifying those
+  //    as a customer P0/P1 is always a false positive (see
+  //    project_mailbox_keyword_b2b_partner_fp). The 6-bucket classifier
+  //    still routes them via the partner_issue bucket.
+  if (isPartnerSender(input.fromAddress)) {
+    return null;
+  }
+
   // 1. Build the corpus: subject + body + optional HTML-stripped fallback
   //    (defensive — caller-provided html only used if body is empty).
   const bodyText = input.body && input.body.trim().length > 0

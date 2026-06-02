@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { classifyKeywords, stripHtml } from './keyword-monitor.service.js';
+import {
+  classifyKeywords,
+  isPartnerSender,
+  stripHtml,
+} from './keyword-monitor.service.js';
 
 describe('classifyKeywords — P0 matches', () => {
   it('matches "kan niet betalen" as P0', () => {
@@ -200,6 +204,66 @@ describe('classifyKeywords — match-rules', () => {
   it('runbook hint for no_availability references booking_error_events', () => {
     const r = classifyKeywords({ subject: '', body: 'Geen beschikbaarheid op die data.' });
     expect(r!.runbook).toMatch(/booking_error_events/i);
+  });
+});
+
+describe('classifyKeywords — B2B partner-domain suppression', () => {
+  // Regression: cluster 6e7b835f13f433eb (2026-06-02). Backoffice ING
+  // <...@crossover.nl> asked to block a voucher; the quoted thread
+  // contained "geen beschikbaarheid" and fired a customer-impact P1
+  // "customer cannot book" page. Partner senders must be suppressed.
+  it('suppresses a keyword hit when sender is a known partner (crossover.nl / ING)', () => {
+    const r = classifyKeywords({
+      subject: '2 dagen parijs voor 2 personen / 23291544',
+      body: 'Beste collega, Kunnen jullie de onderstaande voucher blokkeren? Er was geen beschikbaarheid op de oorspronkelijke datum.',
+      fromAddress: 'backoffice@crossover.nl',
+    });
+    expect(r).toBeNull();
+  });
+
+  it('still fires for the SAME body when sender is a real customer', () => {
+    const r = classifyKeywords({
+      subject: '2 dagen parijs voor 2 personen',
+      body: 'Er was geen beschikbaarheid op mijn gewenste datum.',
+      fromAddress: 'klant@gmail.com',
+    });
+    expect(r).not.toBeNull();
+    expect(r!.severity).toBe('P1');
+    expect(r!.keywords).toContain('geen beschikbaarheid');
+  });
+
+  it('suppresses other known partner domains (ratehawk, viator, phl-tickets, musement) incl. subdomains', () => {
+    for (const addr of [
+      'noreply@ratehawk.com',
+      'mail@mail.ratehawk.com',
+      'support@viator.com',
+      'tickets@phl-tickets.eu',
+      'orders@musement.com',
+    ]) {
+      const r = classifyKeywords({
+        subject: 'prijs veranderd',
+        body: 'De prijs is hoger geworden, duurder dan eerst.',
+        fromAddress: addr,
+      });
+      expect(r, `expected suppression for ${addr}`).toBeNull();
+    }
+  });
+
+  it('does not suppress when fromAddress is absent (back-compat: undefined => customer)', () => {
+    const r = classifyKeywords({ subject: '', body: 'Ik kan niet betalen.' });
+    expect(r).not.toBeNull();
+    expect(r!.severity).toBe('P0');
+  });
+
+  it('isPartnerSender handles empty / malformed addresses safely', () => {
+    expect(isPartnerSender(undefined)).toBe(false);
+    expect(isPartnerSender('')).toBe(false);
+    expect(isPartnerSender('not-an-email')).toBe(false);
+    expect(isPartnerSender('backoffice@crossover.nl')).toBe(true);
+    expect(isPartnerSender('X@CROSSOVER.NL')).toBe(true);
+    // look-alike must NOT match (suffix guard, not substring)
+    expect(isPartnerSender('evil@notcrossover.nl')).toBe(false);
+    expect(isPartnerSender('a@crossover.nl.evil.com')).toBe(false);
   });
 });
 
