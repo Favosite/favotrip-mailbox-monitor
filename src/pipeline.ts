@@ -1,5 +1,5 @@
 import { classify } from './classifier/classifier.service.js';
-import { classifyKeywords } from './classifier/keyword-monitor.service.js';
+import { classifyKeywords, isInternalSender } from './classifier/keyword-monitor.service.js';
 import { detectManipulationFlags } from './classifier/manipulation-flag.service.js';
 import { RepeatedMailerStore } from './classifier/repeated-mailer.service.js';
 import { maskBody, maskFromHeader, maskSubject } from './pii-mask/pii-mask.service.js';
@@ -25,7 +25,15 @@ export function processMails(raw: RawMail[], hashStore: RepeatedMailerStore): Pr
     // content (manualOnly=true) so we'd otherwise miss "kan niet
     // betalen" in those mails. The hit itself only ever touches MASKED
     // fields when posting to Slack.
-    const keywordHit = classifyKeywords({ subject: m.subject, body: m.body });
+    //
+    // Skip own-domain senders: the monitor reads [Gmail]/All Mail, which
+    // includes the CS team's SENT replies. Those quote the customer's
+    // original mail, so a quoted "unable to pay" would self-fire a P0 on
+    // our own outbound reply (false-positive observed 2026-06-02). The
+    // customer's inbound mail is unaffected and still classifies.
+    const keywordHit = isInternalSender(m.fromAddress)
+      ? null
+      : classifyKeywords({ subject: m.subject, body: m.body });
 
     // P0/P1 keyword hits escalate priority to HIGH (mirrors the
     // manipulation-flag escalation above). Downstream Slack #alerts

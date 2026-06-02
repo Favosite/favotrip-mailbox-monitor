@@ -27,6 +27,41 @@
 
 export type KeywordSeverity = 'P0' | 'P1';
 
+/**
+ * Domains we treat as our OWN outbound mail.
+ *
+ * The monitor reads `[Gmail]/All Mail` on klantenservice@favotrip.nl
+ * (see config.ts IMAP_USERNAME hard-lock + IMAP_MAILBOX default), which
+ * INCLUDES the customer-service team's SENT replies. A CS reply quotes
+ * the customer's original mail, so a phrase like "unable to pay" /
+ * "kan niet betalen" sitting in the quoted block would otherwise
+ * self-fire a P0 on our OWN outbound reply (observed 2026-06-02:
+ * subject "Re: ... Working?", body "I'm sorry to hear the booking
+ * process isn't working smootly", sender ***@favotrip.nl).
+ *
+ * Suppressing own-domain senders is safe: the customer's INBOUND mail
+ * arrives separately under their own From address and still classifies
+ * normally, so we never lose the real signal; we only drop the echo on
+ * our own reply.
+ */
+const OWN_SENDER_DOMAINS = ['favotrip.nl'];
+
+/**
+ * True when `fromAddress` is one of our own domains (an outbound CS
+ * reply / internal mail), so the keyword classifier should be skipped.
+ * Accepts a bare address ("klantenservice@favotrip.nl"); tolerant of a
+ * trailing ">" or whitespace if a raw header fragment slips through.
+ */
+export function isInternalSender(fromAddress: string | undefined | null): boolean {
+  if (!fromAddress) return false;
+  const addr = fromAddress.toLowerCase().trim();
+  const at = addr.lastIndexOf('@');
+  if (at === -1) return false;
+  const domain = addr.slice(at + 1).replace(/[>\s]+$/, '').trim();
+  if (!domain) return false;
+  return OWN_SENDER_DOMAINS.some((d) => domain === d || domain.endsWith('.' + d));
+}
+
 export interface KeywordHit {
   severity: KeywordSeverity;
   keywords: string[];

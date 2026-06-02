@@ -91,4 +91,45 @@ describe('pipeline.processMails', () => {
     expect(out[0].flags).toContain('repeated_mailer');
     expect(out[0].priority).toBe('HIGH');
   });
+
+  it('still raises a P0 keywordHit for an INBOUND customer "unable to pay"', () => {
+    const out = processMails(
+      [
+        mkRaw({
+          uid: 20,
+          fromAddress: 'customer@example.com',
+          fromName: 'A Customer',
+          subject: 'Help',
+          body: 'I am unable to pay on your website, the button does nothing.',
+        }),
+      ],
+      store,
+    );
+    expect(out[0].keywordHit).not.toBeNull();
+    expect(out[0].keywordHit!.severity).toBe('P0');
+    expect(out[0].priority).toBe('HIGH');
+  });
+
+  it('does NOT raise a keyword P0 for our OWN outbound CS reply quoting "unable to pay" (regression: cluster 766fef7baad7194e, 2026-06-02)', () => {
+    // The monitor reads [Gmail]/All Mail, so the CS team's SENT reply,
+    // which quotes the customer's original "unable to pay", was
+    // self-firing a P0 on our own outbound mail.
+    const out = processMails(
+      [
+        mkRaw({
+          uid: 21,
+          fromAddress: 'klantenservice@favotrip.nl',
+          fromName: 'Favotrip Klantenservice',
+          subject: 'Re: Working?',
+          body:
+            "Thank you for your message. I'm sorry to hear the booking " +
+            'process isn\'t working smoothly.\n\n> On 2 Jun, a customer wrote:\n' +
+            '> I was unable to pay on the site.',
+        }),
+      ],
+      store,
+    );
+    expect(out[0].keywordHit ?? null).toBeNull();
+    expect(out[0].priority).toBe('NORMAL');
+  });
 });

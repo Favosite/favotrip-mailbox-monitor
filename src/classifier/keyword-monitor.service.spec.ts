@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyKeywords, stripHtml } from './keyword-monitor.service.js';
+import { classifyKeywords, isInternalSender, stripHtml } from './keyword-monitor.service.js';
 
 describe('classifyKeywords — P0 matches', () => {
   it('matches "kan niet betalen" as P0', () => {
@@ -213,5 +213,36 @@ describe('stripHtml', () => {
     const out = stripHtml('<p>Regel 1</p><p>Regel 2</p>');
     expect(out).toMatch(/Regel 1/);
     expect(out).toMatch(/Regel 2/);
+  });
+});
+
+describe('isInternalSender: own-domain outbound guard', () => {
+  it('treats favotrip.nl senders as internal', () => {
+    expect(isInternalSender('klantenservice@favotrip.nl')).toBe(true);
+    expect(isInternalSender('iemand@favotrip.nl')).toBe(true);
+  });
+
+  it('is case-insensitive and tolerates trailing > / whitespace', () => {
+    expect(isInternalSender('Support@Favotrip.NL ')).toBe(true);
+    expect(isInternalSender('cs@favotrip.nl>')).toBe(true);
+  });
+
+  it('treats subdomains of favotrip.nl as internal', () => {
+    expect(isInternalSender('bot@mail.favotrip.nl')).toBe(true);
+  });
+
+  it('does NOT treat customer / partner domains as internal', () => {
+    expect(isInternalSender('jan.jansen@example.com')).toBe(false);
+    expect(isInternalSender('reply@ratehawk.com')).toBe(false);
+    // look-alike domain must not match (endsWith dot-boundary guard)
+    expect(isInternalSender('phish@notfavotrip.nl')).toBe(false);
+    expect(isInternalSender('a@favotrip.nl.evil.com')).toBe(false);
+  });
+
+  it('returns false for empty / malformed addresses', () => {
+    expect(isInternalSender(undefined)).toBe(false);
+    expect(isInternalSender(null)).toBe(false);
+    expect(isInternalSender('')).toBe(false);
+    expect(isInternalSender('no-at-sign')).toBe(false);
   });
 });
