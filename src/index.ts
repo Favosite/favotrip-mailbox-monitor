@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { loadConfig } from './config.js';
 import { DailyRollupService } from './digest/daily-rollup.service.js';
+import { startHealthServer } from './health/health-server.js';
 import {
   BackendApiPoster,
   ConsoleLogPoster,
@@ -104,6 +105,25 @@ async function main(): Promise<void> {
 
   console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: 'startup', cron: cfg.CRON_SCHEDULE }));
 
+  // C13-B11-1 (fix-campagne wave 8): external liveness signal. Without
+  // this, a silently-hung/failing IMAP fetch is indistinguishable from
+  // "genuinely zero mail" — buildDigestMessage([]) intentionally
+  // suppresses the #team heartbeat by policy (2026-05-23), and this
+  // worker exposes no HTTP port otherwise. HEALTH_PORT=0 disables it
+  // (used by tests / anywhere a listening port is undesirable).
+  const healthLog = (level: 'info' | 'warn' | 'error', msg: string, meta?: Record<string, unknown>): void => {
+    console.log(JSON.stringify({ ts: new Date().toISOString(), level, msg, ...meta }));
+  };
+  let healthServer: ReturnType<typeof startHealthServer> | undefined;
+  if (cfg.HEALTH_PORT > 0) {
+    healthServer = startHealthServer({
+      port: cfg.HEALTH_PORT,
+      stateFilePath: cfg.STATE_FILE,
+      staleAfterMs: cfg.HEALTH_STALE_AFTER_MIN * 60_000,
+      log: healthLog,
+    });
+  }
+
   const task = cron.schedule(cfg.CRON_SCHEDULE, () => {
     runner.runOnce().catch((err: Error) => {
       console.log(
@@ -148,6 +168,7 @@ async function main(): Promise<void> {
     console.log(JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: 'shutdown', sig }));
     task.stop();
     rollupTask?.stop();
+    healthServer?.close();
     process.exit(0);
   };
   process.on('SIGINT', () => void shutdown('SIGINT'));

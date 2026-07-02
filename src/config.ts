@@ -178,6 +178,26 @@ const ConfigSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true' || v === '1'),
+
+  /**
+   * C13-B11-1 (fix-campagne wave 8): external liveness signal. Port for
+   * the read-only /health HTTP endpoint (see src/health/health-server.ts).
+   * Set to '0' or empty to disable the health server entirely (e.g. in
+   * unit tests that don't want a listening port). Default 8080 — no
+   * other service in this container binds a port, so no collision risk.
+   */
+  HEALTH_PORT: z.coerce.number().int().nonnegative().default(8080),
+
+  /**
+   * Multiplier applied to CRON_SCHEDULE's effective interval to compute
+   * the /health staleness threshold. Default 2x mirrors the
+   * ~2x-cron-interval convention already used elsewhere in the fleet
+   * (see monitor-ec2-ops deadman crons). CRON_SCHEDULE's interval itself
+   * isn't parsed here (cron expressions aren't trivially reducible to a
+   * single interval in general); HEALTH_STALE_AFTER_MIN gives an explicit
+   * override instead of trying to infer it.
+   */
+  HEALTH_STALE_AFTER_MIN: z.coerce.number().int().positive().default(10),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;

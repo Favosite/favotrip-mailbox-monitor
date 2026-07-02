@@ -47,6 +47,10 @@ function mkCfg(overrides: Partial<Config> = {}): Config {
     SLACK_DOCTRINE_STATE_FILE: path.join(dir, 'slack-doctrine-cooldown.json'),
     SLACK_DOCTRINE_AUDIT_FILE: path.join(dir, 'slack-doctrine-suppressed.jsonl'),
     SLACK_DOCTRINE_DISABLED: false,
+    // C13-B11-1 (fix-campagne wave 8): 0 disables the health server —
+    // runner unit tests don't need a listening port.
+    HEALTH_PORT: 0,
+    HEALTH_STALE_AFTER_MIN: 10,
     ...overrides,
   };
 }
