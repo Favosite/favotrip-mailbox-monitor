@@ -24,6 +24,11 @@ services:
       # ~/favotrip/.env.mailbox-monitor on prod-EC2).
       SLACK_CHANNEL_ALERTS: ${SLACK_CHANNEL_ALERTS:-}
       KEYWORD_DEDUPE_FILE: /var/lib/mailbox-monitor/keyword-dedupe.json
+      # C13-B11-1 (fix-campagne wave 8): external liveness signal.
+      HEALTH_PORT: ${HEALTH_PORT:-8080}
+      HEALTH_STALE_AFTER_MIN: ${HEALTH_STALE_AFTER_MIN:-10}
+    ports:
+      - "${HEALTH_PORT:-8080}:8080"
     volumes:
       - mailbox-state:/var/lib/mailbox-monitor
 
