@@ -52,16 +52,14 @@ async function main(): Promise<void> {
     );
   }
 
-  // 2026-05-25 PR-1 ecosystem-doctrine wire-up: wrap the #team poster
-  // with DoctrineSlackPoster so Gate A (6-line cap) + Gate B (30-min
-  // content cooldown) + R4 (tech-refs guard) apply BEFORE the backend
-  // relay call. Overflow target is the #alerts poster — when Gate A
-  // fires, the full body lands in #alerts and the 1-liner in #team.
+  // 2026-05-25 ecosystem-doctrine wire-up: wrap the #team poster
+  // with DoctrineSlackPoster so the 30-minute content cooldown and R4
+  // tech-refs guard apply before the backend relay call.
   //
   // Skips DRY_RUN (we want the console poster to see the original text
   // for dev visibility) and SLACK_DOCTRINE_DISABLED=true (operator kill-
-  // switch). The #alerts poster (alertsSlack) is NOT wrapped — Gate
-  // semantics only apply to top-level #team, and the keyword-alert
+  // switch). The #alerts poster (alertsSlack) is NOT wrapped — doctrine
+  // checks only apply to top-level #team, and the keyword-alert
   // service already has its own (severity, thread, day) dedupe.
   if (
     !cfg.DRY_RUN &&
@@ -71,7 +69,6 @@ async function main(): Promise<void> {
     slack = new DoctrineSlackPoster({
       inner: slack,
       channelId: process.env.SLACK_CHANNEL_ID,
-      overflowPoster: alertsSlack,
       stateFile: cfg.SLACK_DOCTRINE_STATE_FILE,
       auditFile: cfg.SLACK_DOCTRINE_AUDIT_FILE,
       log: (level, msg, meta) => {
@@ -85,7 +82,6 @@ async function main(): Promise<void> {
         msg: 'slack-doctrine.enabled',
         stateFile: cfg.SLACK_DOCTRINE_STATE_FILE,
         auditFile: cfg.SLACK_DOCTRINE_AUDIT_FILE,
-        overflowConfigured: !!alertsSlack,
       }),
     );
   }

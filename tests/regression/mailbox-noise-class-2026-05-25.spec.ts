@@ -2,11 +2,11 @@
  * Cross-layer regression for the 2026-05-25 observed #team noise class.
  *
  * Composes `buildDigestMessage()` (digest text builder) with
- * `DoctrineSlackPoster` (Gate A + Gate B). Asserts:
+ * `DoctrineSlackPoster` (content cooldown + tech-refs guard). Asserts:
  *   1. A realistic partner-issue digest, posted twice within 30 min,
- *      collapses to a single landed post (Gate B).
- *   2. A hypothetical 12-line ACTION digest body lands as a 1-liner
- *      in #team plus the full body in #alerts (Gate A).
+ *      collapses to a single landed post.
+ *   2. A 12-line ACTION digest body lands unchanged in #team and is not
+ *      copied to #alerts.
  *   3. The 2026-05-25 burst pattern (4 identical posts within 30 min
  *      + 1 fresh post 24h later) collapses to ≤2 landed posts.
  *
@@ -62,7 +62,7 @@ class RecordingPoster implements SlackPoster {
  *  as interrupt-worthy. Post-2026-05-26: partner_issue bucket alone no
  *  longer interrupts — we need a P0/P1 co-signal. Use a P0 keyword in
  *  the body so the doctrine regression-fixture continues to exercise the
- *  Gate A/B duplicate-suppression paths it was designed for. */
+ *  duplicate-suppression path it was designed for. */
 function partnerIssueMail(seedIdx: number): ProcessedMail {
   return {
     id: `mail-${seedIdx}`,
@@ -89,7 +89,7 @@ function partnerIssueMail(seedIdx: number): ProcessedMail {
 // ─── (1) digest regression — 2 identical posts in 30 min ───────────────
 
 describe('mailbox noise regression — 2 identical partner-issue posts within 30 min', () => {
-  it('builds the same digest twice; 2nd post is suppressed by Gate B', async () => {
+  it('builds the same digest twice; 2nd post is suppressed by the content cooldown', async () => {
     const mails = [partnerIssueMail(1), partnerIssueMail(2)];
     const text = buildDigestMessage(mails);
     // sanity: digest text is a single ACTION line. Reason now derived
@@ -99,12 +99,10 @@ describe('mailbox noise regression — 2 identical partner-issue posts within 30
     expect(text).toContain('kan niet boeken');
 
     const inner = new RecordingPoster();
-    const overflow = new RecordingPoster();
     const { stateFile, auditFile } = freshTmp();
     const poster = new DoctrineSlackPoster({
       inner,
       channelId: CHANNEL_TEAM,
-      overflowPoster: overflow,
       stateFile,
       auditFile,
     });
@@ -112,20 +110,16 @@ describe('mailbox noise regression — 2 identical partner-issue posts within 30
     await poster.post(text);
     await poster.post(text); // identical content within seconds
     expect(inner.posts.length).toBe(1); // only first landed
-    expect(overflow.posts.length).toBe(0); // <=6 lines → no Gate A
 
     const audit = readFileSync(auditFile, 'utf-8');
     expect(audit).toContain('SUPPRESSED_CONTENT_DUPLICATE');
   });
 });
 
-// ─── (2) digest regression — 12-line ACTION digest is capped + routed ──
+// ─── (2) digest regression - 12-line ACTION digest passes through ─────
 
-describe('mailbox noise regression — 12-line ACTION digest body is capped to 1-liner', () => {
-  it('Gate A routes the 1-line ACTION header to #team + full body to overflow', async () => {
-    // Hypothetical: a future regression makes buildDigestMessage emit a
-    // multi-paragraph essay. The doctrine catches it before it lands in
-    // #team, even if the digest builder itself regresses.
+describe('mailbox noise regression — 12-line ACTION digest body is delivered unchanged', () => {
+  it('posts the complete body once to #team and never to #alerts', async () => {
     const header = '<@U0961S209GA> ACTION: behandel 4 urgente klantmails: partner-issue, refund, annulering, +1 meer.';
     const longBody = [
       header,
@@ -141,24 +135,22 @@ describe('mailbox noise regression — 12-line ACTION digest body is capped to 1
       '',
       '*Owner:* Jeanne / klantenservice',
     ].join('\n');
-    expect(longBody.split('\n').length).toBeGreaterThan(6); // sanity
+    expect(longBody.split('\n')).toHaveLength(12); // sanity
 
     const inner = new RecordingPoster();
-    const overflow = new RecordingPoster();
+    const alerts = new RecordingPoster();
     const { stateFile, auditFile } = freshTmp();
     const poster = new DoctrineSlackPoster({
       inner,
       channelId: CHANNEL_TEAM,
-      overflowPoster: overflow,
       stateFile,
       auditFile,
     });
 
     await poster.post(longBody);
-    // #team gets the 1-liner ACTION header verbatim (Gate A extraction)
-    expect(inner.posts).toEqual([header]);
-    // #alerts gets the full body (Gate A overflow)
-    expect(overflow.posts).toEqual([longBody]);
+    await poster.post(longBody);
+    expect(inner.posts).toEqual([longBody]);
+    expect(alerts.posts).toEqual([]);
   });
 });
 
@@ -168,16 +160,14 @@ describe('mailbox noise regression — observed 2026-05-25 burst pattern', () =>
   it('4 identical posts within 30 min + 1 fresh 24h later → ≤2 posts land', async () => {
     // Slack history showed 4× near-identical "behandel … partner-issue"
     // posts in a tight window, then another posted hours later. The
-    // doctrine should collapse the burst (Gate B 30-min window) and
+    // doctrine should collapse the burst (30-min content window) and
     // pass the 24h-later fresh post (window expired).
     const inner = new RecordingPoster();
-    const overflow = new RecordingPoster();
     const { stateFile, auditFile } = freshTmp();
     let nowSec = 1_700_000_000;
     const poster = new DoctrineSlackPoster({
       inner,
       channelId: CHANNEL_TEAM,
-      overflowPoster: overflow,
       stateFile,
       auditFile,
       now: () => nowSec,

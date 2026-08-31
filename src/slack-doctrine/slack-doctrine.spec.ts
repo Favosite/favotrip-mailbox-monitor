@@ -1,9 +1,4 @@
-/**
- * 10 golden-case tests for the Slack-doctrine TS port. The cases mirror
- * server-claude-worker `scripts/monitors/tests/test_slack_post.py` so a
- * future cross-impl parity test can assert both implementations agree
- * byte-for-byte on these inputs.
- */
+/** Regression cases for the Slack-doctrine TS port. */
 import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -13,11 +8,8 @@ import {
   CHANNEL_ALERTS,
   CHANNEL_TEAM,
   CONTENT_COOLDOWN_WINDOW_SECONDS,
-  MAX_TEAM_LINES,
   contentDedupKey,
   evaluate,
-  extractActionSummary,
-  lineCount,
   normalizeForContentHash,
 } from './slack-doctrine.js';
 
@@ -48,9 +40,9 @@ function makeLongText(n: number, header = ''): string {
   return lines.join('\n');
 }
 
-// ─── Golden 1: ≤6-line top-level #team passes through unchanged ──────
+// ─── Golden 1: short top-level #team passes through unchanged ────────
 
-describe('golden case 1 — below cap passes through', () => {
+describe('golden case 1 — short message passes through', () => {
   it('returns SENT with original text intact', () => {
     const body =
       '<@U083ZU8PH43> ACTION: approve thing\n' +
@@ -61,68 +53,59 @@ describe('golden case 1 — below cap passes through', () => {
     if (d.post) {
       expect(d.status).toBe('SENT');
       expect(d.text).toBe(body);
-      expect(d.full_detail_routed_to_channel).toBeUndefined();
     }
   });
 });
 
-// ─── Golden 2: >6-line #team with ACTION header keeps line 1 verbatim ─
+// ─── Golden 2: long #team body is delivered unchanged ────────────────
 
-describe('golden case 2 — line cap with ACTION header', () => {
-  it('returns HARD_CAPPED with first line preserved + overflow routed to #alerts', () => {
+describe('golden case 2 — long ACTION body passes through', () => {
+  it('returns SENT with all 12 lines unchanged', () => {
     const header = '<@U083ZU8PH43> ACTION: approve nginx bump 768 -> 8192';
-    const body = makeLongText(MAX_TEAM_LINES + 4, header);
+    const body = makeLongText(12, header);
     const d = evaluate({ channel: CHANNEL_TEAM, text: body, stateFile: freshState() });
-    expect(d.post).toBe(true);
-    if (d.post) {
-      expect(d.status).toBe('HARD_CAPPED_TO_ACTION_SUMMARY');
-      expect(d.text).toBe(header);
-      expect(d.full_detail_routed_to_channel).toBe(CHANNEL_ALERTS);
-      expect(d.full_detail_text).toBe(body);
-      expect(d.text).not.toContain('essay line');
-    }
-  });
-});
-
-// ─── Golden 3: >6-line #team WITHOUT ACTION header → generic pointer ─
-
-describe('golden case 3 — line cap without ACTION header', () => {
-  it('returns generic pointer (no auto @-mention)', () => {
-    const body = makeLongText(MAX_TEAM_LINES + 2);
-    const d = evaluate({ channel: CHANNEL_TEAM, text: body, stateFile: freshState() });
-    expect(d.post).toBe(true);
-    if (d.post) {
-      expect(d.status).toBe('HARD_CAPPED_TO_ACTION_SUMMARY');
-      expect(d.text.toLowerCase()).toContain('see #alerts');
-      expect(d.text).not.toContain('<@U'); // no auto-generated @-mention
-    }
-  });
-});
-
-// ─── Golden 4: policyApprovedLongForm bypasses the cap ─────────────────
-
-describe('golden case 4 — policyApprovedLongForm escape valve', () => {
-  it('returns SENT with the long body intact', () => {
-    const body = makeLongText(
-      MAX_TEAM_LINES + 8,
-      '<@U083ZU8PH43> ACTION: weekly incident report',
-    );
-    const d = evaluate({
-      channel: CHANNEL_TEAM,
-      text: body,
-      stateFile: freshState(),
-      policyApprovedLongForm: true,
-    });
     expect(d.post).toBe(true);
     if (d.post) {
       expect(d.status).toBe('SENT');
       expect(d.text).toBe(body);
-      expect(d.full_detail_routed_to_channel).toBeUndefined();
+      expect(d.text.split('\n')).toHaveLength(12);
     }
   });
 });
 
-// ─── Golden 5: #alerts never gets capped (technical channel) ─────────
+// ─── Golden 3: long #team body needs no ACTION header ────────────────
+
+describe('golden case 3 — long body without ACTION header passes through', () => {
+  it('does not rewrite or inject content', () => {
+    const body = makeLongText(12);
+    const d = evaluate({ channel: CHANNEL_TEAM, text: body, stateFile: freshState() });
+    expect(d.post).toBe(true);
+    if (d.post) {
+      expect(d.status).toBe('SENT');
+      expect(d.text).toBe(body);
+    }
+  });
+});
+
+// ─── Golden 4: long bodies remain subject to content cooldown ────────
+
+describe('golden case 4 — long duplicate is suppressed', () => {
+  it('delivers the first body unchanged and suppresses the duplicate', () => {
+    const body = makeLongText(12, '<@U083ZU8PH43> ACTION: weekly incident report');
+    const stateFile = freshState();
+    const first = evaluate({ channel: CHANNEL_TEAM, text: body, stateFile });
+    const duplicate = evaluate({ channel: CHANNEL_TEAM, text: body, stateFile });
+    expect(first.post).toBe(true);
+    if (first.post) {
+      expect(first.status).toBe('SENT');
+      expect(first.text).toBe(body);
+    }
+    expect(duplicate.post).toBe(false);
+    if (!duplicate.post) expect(duplicate.status).toBe('SUPPRESSED_CONTENT_DUPLICATE');
+  });
+});
+
+// ─── Golden 5: #alerts bypasses #team policy checks ───────────────────
 
 describe('golden case 5 — #alerts is not gated', () => {
   it('long bodies pass through unchanged', () => {
@@ -146,7 +129,7 @@ describe('golden case 5 — #alerts is not gated', () => {
   });
 });
 
-// ─── Golden 6: thread replies bypass both gates ──────────────────────
+// ─── Golden 6: thread replies bypass policy checks ───────────────────
 
 describe('golden case 6 — thread reply bypass', () => {
   it('passes through even when body is long', () => {
@@ -282,7 +265,7 @@ describe('bonus — _Technical refs: footer blocked from #team', () => {
 
 // ─── Unit tests on helpers ────────────────────────────────────────────
 
-describe('helpers — normalization + summary extraction', () => {
+describe('helpers — normalization', () => {
   it('normalizeForContentHash strips mentions', () => {
     expect(normalizeForContentHash('<@U083ZU8PH43> hello')).toBe('hello');
   });
@@ -309,26 +292,7 @@ describe('helpers — normalization + summary extraction', () => {
     const alerts = contentDedupKey(CHANNEL_ALERTS, 'same body');
     expect(team).not.toBe(alerts);
   });
-  it('extractActionSummary preserves ACTION-header line verbatim', () => {
-    const line = '<@U083ZU8PH43> ACTION: do thing';
-    const body = `${line}\nline 2\nline 3\nline 4\nline 5\nline 6\nline 7\nline 8`;
-    expect(extractActionSummary(body, MAX_TEAM_LINES)).toBe(line);
-  });
-  it('extractActionSummary generates pointer when no ACTION header', () => {
-    const body = makeLongText(MAX_TEAM_LINES + 3);
-    const summary = extractActionSummary(body, MAX_TEAM_LINES);
-    expect(summary.toLowerCase()).toContain('see #alerts');
-    expect(summary).not.toContain('<@U');
-  });
-  it('lineCount handles empty + single-line + multi-line', () => {
-    expect(lineCount('')).toBe(0);
-    expect(lineCount('hello')).toBe(1);
-    expect(lineCount('a\nb\nc')).toBe(3);
-  });
   it('CONTENT_COOLDOWN_WINDOW_SECONDS is 30 min', () => {
     expect(CONTENT_COOLDOWN_WINDOW_SECONDS).toBe(1800);
-  });
-  it('MAX_TEAM_LINES is 6', () => {
-    expect(MAX_TEAM_LINES).toBe(6);
   });
 });
