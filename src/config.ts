@@ -144,10 +144,8 @@ const ConfigSchema = z.object({
   /**
    * Slack-doctrine state files (Dennis 2026-05-25 PR-1 ecosystem
    * doctrine rollout). The doctrine sits BELOW the owner-cooldown +
-   * keyword-dedupe layers and provides a final-stage gate:
-   *   - Gate A: top-level #team posts >6 lines auto-rewritten to a
-   *     1-line ACTION summary + full body routed to #alerts
-   *   - Gate B: 30-min content cooldown on normalized text hash;
+   * keyword-dedupe layers and provides final-stage policy checks:
+   *   - 30-min content cooldown on normalized text hash;
    *     stops near-identical posts that slipped past owner-cooldown
    *     because the text was identical and recent
    *   - R4: blocks `_Technical refs:` footer from top-level #team
@@ -170,9 +168,9 @@ const ConfigSchema = z.object({
     .default('/var/lib/mailbox-monitor/slack-doctrine-suppressed.jsonl'),
   /**
    * Disable the doctrine adapter entirely. Use this as a runtime
-   * kill-switch if Gate A/B start mis-classifying. Default false —
-   * doctrine is the new normal. Set to 'true'/'1' to revert to the
-   * pre-doctrine BackendApiPoster behavior.
+   * kill-switch if the cooldown or tech-refs guard starts mis-classifying.
+   * Default false — doctrine is the new normal. Set to 'true'/'1' to
+   * revert to the pre-doctrine BackendApiPoster behavior.
    */
   SLACK_DOCTRINE_DISABLED: z
     .string()

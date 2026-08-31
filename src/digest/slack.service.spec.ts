@@ -53,99 +53,60 @@ class RecordingPoster implements SlackPoster {
   }
 }
 
-describe('DoctrineSlackPoster — short #team post (pass through)', () => {
-  it('forwards short bodies unchanged to inner; no overflow used', async () => {
+describe('DoctrineSlackPoster — #team pass-through', () => {
+  it('forwards short bodies unchanged to inner', async () => {
     const inner = new RecordingPoster();
-    const overflow = new RecordingPoster();
     const { stateFile, auditFile } = freshTmp();
     const poster = new DoctrineSlackPoster({
       inner,
       channelId: CHANNEL_TEAM,
-      overflowPoster: overflow,
       stateFile,
       auditFile,
     });
     const body = '<@U083ZU8PH43> ACTION: approve thing\nline 2\nline 3';
     await poster.post(body);
     expect(inner.posts).toEqual([body]);
-    expect(overflow.posts).toEqual([]);
   });
-});
 
-describe('DoctrineSlackPoster — Gate A (line cap)', () => {
-  it('posts 1-liner to #team AND full body to overflow on long #team body', async () => {
+  it('delivers a 12-line body unchanged once to #team and never to #alerts', async () => {
     const inner = new RecordingPoster();
-    const overflow = new RecordingPoster();
+    const alerts = new RecordingPoster();
     const { stateFile, auditFile } = freshTmp();
     const poster = new DoctrineSlackPoster({
       inner,
       channelId: CHANNEL_TEAM,
-      overflowPoster: overflow,
       stateFile,
       auditFile,
     });
     const header = '<@U083ZU8PH43> ACTION: investigate cluster';
-    const body = [header, 'line 2', 'line 3', 'line 4', 'line 5', 'line 6', 'line 7', 'line 8'].join('\n');
-    await poster.post(body);
-    expect(inner.posts).toEqual([header]); // 1-liner only
-    expect(overflow.posts).toEqual([body]); // full body
-  });
-
-  it('still posts 1-liner if overflow throws (best-effort overflow)', async () => {
-    const inner = new RecordingPoster();
-    const overflow = new RecordingPoster();
-    overflow.shouldThrow = true;
-    const { stateFile, auditFile } = freshTmp();
-    const poster = new DoctrineSlackPoster({
-      inner,
-      channelId: CHANNEL_TEAM,
-      overflowPoster: overflow,
-      stateFile,
-      auditFile,
-    });
     const body = [
-      '<@U083ZU8PH43> ACTION: investigate',
+      header,
       'line 2',
       'line 3',
       'line 4',
       'line 5',
       'line 6',
       'line 7',
+      'line 8',
+      'line 9',
+      'line 10',
+      'line 11',
+      'line 12',
     ].join('\n');
     await poster.post(body);
-    expect(inner.posts.length).toBe(1); // 1-liner landed
-    // audit captures the overflow failure
-    const audit = readFileSync(auditFile, 'utf-8');
-    expect(audit).toContain('HARD_CAPPED_OVERFLOW_POST_FAILED');
-  });
-
-  it('passes through long body when no overflow poster is configured', async () => {
-    const inner = new RecordingPoster();
-    const { stateFile, auditFile } = freshTmp();
-    const poster = new DoctrineSlackPoster({
-      inner,
-      channelId: CHANNEL_TEAM,
-      // no overflowPoster
-      stateFile,
-      auditFile,
-    });
-    const header = '<@U083ZU8PH43> ACTION: x';
-    const body = [header, 'a', 'b', 'c', 'd', 'e', 'f', 'g'].join('\n');
     await poster.post(body);
-    // 1-liner is posted to inner even without overflow target
-    expect(inner.posts).toEqual([header]);
+    expect(inner.posts).toEqual([body]);
+    expect(alerts.posts).toEqual([]);
   });
 });
 
-describe('DoctrineSlackPoster — Gate B (content cooldown)', () => {
+describe('DoctrineSlackPoster — content cooldown', () => {
   it('first post lands; identical 2nd post within window does NOT land', async () => {
     const inner = new RecordingPoster();
-    const overflow = new RecordingPoster();
     const { stateFile, auditFile } = freshTmp();
     const poster = new DoctrineSlackPoster({
       inner,
       channelId: CHANNEL_TEAM,
-      overflowPoster: overflow,
       stateFile,
       auditFile,
     });
@@ -153,22 +114,19 @@ describe('DoctrineSlackPoster — Gate B (content cooldown)', () => {
     await poster.post(body);
     await poster.post(body);
     expect(inner.posts).toEqual([body]); // only first lands
-    expect(overflow.posts).toEqual([]); // not capped (≤6 lines)
     // 2nd call wrote audit
     const audit = readFileSync(auditFile, 'utf-8');
     expect(audit).toContain('SUPPRESSED_CONTENT_DUPLICATE');
   });
 });
 
-describe('DoctrineSlackPoster — #alerts channel (gates do NOT apply)', () => {
-  it('long bodies pass through to inner; no cap, no dedupe', async () => {
+describe('DoctrineSlackPoster — #alerts channel (policy checks do NOT apply)', () => {
+  it('long bodies pass through to inner without dedupe', async () => {
     const inner = new RecordingPoster();
-    const overflow = new RecordingPoster();
     const { stateFile, auditFile } = freshTmp();
     const poster = new DoctrineSlackPoster({
       inner,
       channelId: CHANNEL_ALERTS,
-      overflowPoster: overflow,
       stateFile,
       auditFile,
     });
@@ -176,7 +134,6 @@ describe('DoctrineSlackPoster — #alerts channel (gates do NOT apply)', () => {
     await poster.post(body);
     await poster.post(body);
     expect(inner.posts).toEqual([body, body]); // both land
-    expect(overflow.posts).toEqual([]); // no Gate A from #alerts side
   });
 });
 

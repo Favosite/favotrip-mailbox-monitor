@@ -58,24 +58,16 @@ export class BackendApiPoster implements SlackPoster {
 
 /**
  * 2026-05-25: DoctrineSlackPoster wraps any SlackPoster (typically a
- * BackendApiPoster for #team) with Gate A (line cap) + Gate B (30-min
- * content cooldown) + tech-refs guard. Mirrors server-claude-worker
- * `scripts/monitors/slack_post.py` doctrine — ports the same behavior
- * + state shape so a future golden-case parity test asserts both
- * impls agree byte-for-byte (see PR plans in favotrip-handbook/proposals).
+ * BackendApiPoster for #team) with a 30-minute content cooldown and a
+ * tech-refs guard. Mirrors server-claude-worker
+ * `scripts/monitors/slack_post.py` doctrine.
  *
  * Wiring:
  *   - `inner`           — the original SlackPoster (e.g. BackendApiPoster
  *                         configured for #team)
  *   - `channelId`       — channel `inner` posts to (used to decide
- *                         whether gates apply; gates only fire for
+ *                         whether policy checks apply; checks only fire for
  *                         CHANNEL_TEAM top-level posts)
- *   - `overflowPoster`  — separate poster used when Gate A fires; we
- *                         post the FULL original body here while
- *                         `inner` gets only the 1-line ACTION summary.
- *                         Typically a BackendApiPoster configured for
- *                         #alerts. If omitted (or doctrine doesn't fire
- *                         Gate A), behaves as no-op.
  *   - `stateFile`       — JSON cooldown state file (mirror of Python
  *                         wrapper's slack-post-content-cooldown.json)
  *   - `auditFile`       — JSONL suppression-audit log; one line per
@@ -88,22 +80,16 @@ export class BackendApiPoster implements SlackPoster {
  *   - SUPPRESSED / BLOCKED outcomes → suppression-audit row written,
  *     `post()` returns normally (no throw). Suppression IS success in
  *     the doctrine model — the post correctly did NOT land.
- *   - Overflow `inner.post()` for #alerts can throw; we catch + log to
- *     audit AND still post the 1-liner to #team (1-liner says "see
- *     #alerts for full content" which is a now-broken pointer, but
- *     the alternative — failing the whole post — is worse).
- *   - Inner `inner.post()` for the (possibly-rewritten) text on the
- *     original channel can throw; we re-throw so the caller sees the
- *     same error contract as a bare BackendApiPoster.
+ *   - Inner `inner.post()` for the original text can throw; we re-throw
+ *     so the caller sees the same error contract as a bare
+ *     BackendApiPoster.
  */
 export interface DoctrineSlackPosterOptions {
   inner: SlackPoster;
   channelId: string;
-  overflowPoster?: SlackPoster;
   stateFile: string;
   auditFile: string;
   now?: () => number;
-  maxTeamLines?: number;
   contentCooldownSec?: number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, meta?: Record<string, unknown>) => void;
 }
@@ -116,7 +102,6 @@ export class DoctrineSlackPoster implements SlackPoster {
       channel: this.opts.channelId,
       text,
       stateFile: this.opts.stateFile,
-      maxTeamLines: this.opts.maxTeamLines,
       contentCooldownSec: this.opts.contentCooldownSec,
       now: this.opts.now,
     });
@@ -138,46 +123,9 @@ export class DoctrineSlackPoster implements SlackPoster {
       return;
     }
 
-    // Decision: post = true with overflow → post full body to overflow
-    // channel FIRST (so a 1-liner saying "see #alerts" isn't misleading
-    // if #alerts post fails). Mirrors Python `_hard_cap_team_post`.
-    if (
-      decision.status === 'HARD_CAPPED_TO_ACTION_SUMMARY' &&
-      decision.full_detail_text !== undefined &&
-      this.opts.overflowPoster
-    ) {
-      try {
-        await this.opts.overflowPoster.post(decision.full_detail_text);
-      } catch (err) {
-        // Best-effort: log + continue. Caller still wants 1-liner in #team
-        // for human visibility; the audit captures the overflow failure.
-        const msg = (err as Error).message ?? String(err);
-        this.appendAudit({
-          outcome: 'HARD_CAPPED_OVERFLOW_POST_FAILED',
-          channel: decision.full_detail_routed_to_channel ?? 'unknown-overflow-channel',
-          dedupKey: decision.dedupKey,
-          reason: msg,
-          textPreview: decision.full_detail_text.slice(0, 200),
-        });
-        this.opts.log?.('warn', 'slack-doctrine.overflow.failed', {
-          channel: decision.full_detail_routed_to_channel,
-          err: msg,
-        });
-      }
-    }
-
-    // Now post the (possibly-rewritten) text to the original channel.
-    // Re-throw on failure — caller's error contract is unchanged from
-    // a bare BackendApiPoster.
+    // Post the original text to the original channel. Re-throw on failure;
+    // the caller's error contract is unchanged from a bare BackendApiPoster.
     await this.opts.inner.post(decision.text);
-
-    if (decision.status === 'HARD_CAPPED_TO_ACTION_SUMMARY') {
-      this.opts.log?.('info', 'slack-doctrine.hard-capped', {
-        channel: this.opts.channelId,
-        overflowChannel: decision.full_detail_routed_to_channel,
-        dedupKey: decision.dedupKey,
-      });
-    }
   }
 
   /** Append one JSONL row to the suppression-audit file. Best-effort
