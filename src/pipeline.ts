@@ -5,6 +5,19 @@ import { RepeatedMailerStore } from './classifier/repeated-mailer.service.js';
 import { maskBody, maskFromHeader, maskSubject } from './pii-mask/pii-mask.service.js';
 import type { ProcessedMail, RawMail } from './types.js';
 
+/**
+ * Mail sent FROM our own domain (a klantenservice colleague's reply that
+ * lands in the inbox, a CC, an internal forward) is not a customer
+ * complaint. Its wording ("helaas geen beschikbaarheid", "duurder") is our
+ * own explanation to the customer, so it must never trigger the keyword
+ * alert. Incident 2026-10-07: a staff reply "Re: Hulp bij reserveren"
+ * fired a P1 no_availability alert in #alerts.
+ */
+export function isOwnDomainSender(fromAddress: string): boolean {
+  const domain = (fromAddress ?? '').trim().toLowerCase().split('@').pop() ?? '';
+  return domain === 'favotrip.nl' || domain.endsWith('.favotrip.nl');
+}
+
 export function processMails(raw: RawMail[], hashStore: RepeatedMailerStore): ProcessedMail[] {
   const processed: ProcessedMail[] = [];
   for (const m of raw) {
@@ -25,7 +38,9 @@ export function processMails(raw: RawMail[], hashStore: RepeatedMailerStore): Pr
     // content (manualOnly=true) so we'd otherwise miss "kan niet
     // betalen" in those mails. The hit itself only ever touches MASKED
     // fields when posting to Slack.
-    const keywordHit = classifyKeywords({ subject: m.subject, body: m.body });
+    const keywordHit = isOwnDomainSender(m.fromAddress)
+      ? null
+      : classifyKeywords({ subject: m.subject, body: m.body });
 
     // P0/P1 keyword hits escalate priority to HIGH (mirrors the
     // manipulation-flag escalation above). Downstream Slack #alerts
